@@ -240,6 +240,8 @@ code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;pad
   <nav class="nav" id="nav">
     <button class="active" data-panel="resumen"><span class="nav-icon">📊</span>Resumen</button>
     <button data-panel="ingresos"><span class="nav-icon">💰</span>Ingresos</button>
+    <button data-panel="honorarios"><span class="nav-icon">🧾</span>Honorarios</button>
+    <button data-panel="flujocaja"><span class="nav-icon">💹</span>Flujo de caja</button>
     <button data-panel="gastos"><span class="nav-icon">📉</span>Gastos por categoría</button>
     <button data-panel="tarjetas"><span class="nav-icon">💳</span>Tarjetas de crédito</button>
     <button data-panel="deudas"><span class="nav-icon">🤝</span>Deudas personales</button>
@@ -327,6 +329,46 @@ code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;pad
         <h3>Detalle</h3>
         <div class="table-wrap"><table id="incomeTable"></table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- HONORARIOS -->
+
+  <section id="honorarios" class="panel">
+    <div class="panel-header"><h2>Honorarios</h2></div>
+    <div class="kpi-grid" id="honorariosKpis"></div>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>Estado del mes</h3>
+        <div class="chartbox"><canvas id="honorariosDonut"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Por cliente</h3>
+        <div class="chartbox"><canvas id="honorariosClientes"></canvas></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Facturas del mes</h3>
+      <div class="table-wrap"><table id="honorariosTable"></table></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Pendientes de cobro (todos los períodos)</h3>
+      <div class="table-wrap"><table id="honorariosPendientes"></table></div>
+    </div>
+  </section>
+
+  <!-- FLUJO DE CAJA -->
+
+  <section id="flujocaja" class="panel">
+    <div class="panel-header"><h2>Flujo de caja mensual</h2></div>
+    <div class="kpi-grid" id="flujoKpis"></div>
+    <div class="card" style="margin-bottom:12px">
+      <h3>Histórico mensual: facturado vs gastos</h3>
+      <div class="chartbox tall"><canvas id="flujoChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Comparativa mes a mes</h3>
+      <div class="table-wrap"><table id="flujoTable"></table></div>
     </div>
   </section>
 
@@ -473,9 +515,16 @@ code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;pad
 <script>
 const CONFIG = {
   clientId: '62e6ce69-f694-4721-b25a-4d35c059da34',
-  excelPath: '/0 - Trabajo/CONTROL DE GASTOS/Gastos 2026.xlsx',
+  excelPath: '/0 - Trabajo/CONTROL DE GASTOS/Gastos 2026 .xlsx',
+  honorariosPath: '/0 - Trabajo/HONORARIOS GENERALES/00-HONORARIOS.xlsx',
+  honorariosSheet: 'FACTURAS',
+  honorariosRange: 'A3:N1000',
   scopes: ['Files.ReadWrite','User.Read']
 };
+// Mapeo de meses tipo "ENE"/"FEB" usado en el Excel de honorarios
+const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
+let honorariosFid = null;
+let facturas = []; // facturas parseadas del Excel de honorarios
 const TABLES = {
   transacciones:'tbl_Transacciones', tarjetas:'tbl_Tarjetas', cuotas:'tbl_CuotasMensuales',
   deudas:'tbl_Deudas', inversiones:'tbl_Inversiones', ahorro:'tbl_Ahorro'
@@ -607,7 +656,7 @@ async function gFetch(path, options={}){
   if(!t) return null;
   const headers = Object.assign({'Authorization':'Bearer '+t}, options.headers||{});
   if(options.body && !headers['Content-Type']) headers['Content-Type']='application/json';
-  if(sessionId && path.includes('/workbook/')) headers['workbook-session-id']=sessionId;
+  if(sessionId && driveItem && path.includes('/items/'+driveItem.id+'/workbook/')) headers['workbook-session-id']=sessionId;
   const res = await fetch('https://graph.microsoft.com/v1.0'+path, {...options, headers});
   if(!res.ok){ const txt=await res.text(); throw new Error(res.status+' '+txt); }
   if(res.status===204) return null;
@@ -632,6 +681,81 @@ async function readTable(name){
   return {headers, data, address:r.address};
 }
 
+async function loadHonorarios(){
+  // Lee el archivo de honorarios y devuelve facturas parseadas. Si falla, retorna [].
+  try{
+    if(!honorariosFid){
+      const item = await gFetch(`/me/drive/root:/${encodePath(CONFIG.honorariosPath)}:`);
+      honorariosFid = item.id;
+    }
+    const addr = encodeURIComponent(`${CONFIG.honorariosSheet}!${CONFIG.honorariosRange}`);
+    const r = await gFetch(`/me/drive/items/${honorariosFid}/workbook/worksheets/${encodeURIComponent(CONFIG.honorariosSheet)}/range(address='${addr}')?$select=values,text`);
+    return parseHonorarios(r);
+  }catch(e){
+    console.warn('No se pudo leer honorarios:', e);
+    return [];
+  }
+}
+
+function parseHonorarios(range){
+  const values = range?.values || [];
+  const text   = range?.text   || [];
+  if(values.length < 2) return [];
+  // El rango empieza en A3, fila 1 del rango = encabezados (fila 3 del Excel), datos desde fila 4
+  return values.slice(1).map((row,i)=>{
+    const t = text[i+1] || [];
+    const rawId = row[0];
+    if(!rawId || isNaN(Number(rawId))) return null;
+    const rawMonto = row[8];
+    const monto = typeof rawMonto === 'number'
+      ? rawMonto
+      : (parseFloat(String(rawMonto||'').replace(/[^\d,.-]/g,'').replace(/\./g,'').replace(',', '.')) || 0);
+    const mesTxt = String(row[3]||'').trim().toUpperCase().substring(0,3);
+    const anio = Number(row[4]) || 0;
+    const mesIdx = MESES_HON.indexOf(mesTxt); // 0..11, -1 si no encontrado
+    const estado = (()=> {
+      const s = String(row[9]||'Pendiente').trim().toLowerCase();
+      if(s.startsWith('pag')) return 'Pagada';
+      if(s.startsWith('anu')) return 'Anulada';
+      return 'Pendiente';
+    })();
+    const tipo = (()=>{
+      const s = String(row[13]||'').trim().toLowerCase();
+      if(s.startsWith('comp')) return 'Compartida';
+      if(s.startsWith('sin')) return 'Sin Factura';
+      if(s.startsWith('des')) return 'Desestimada';
+      return 'Propia';
+    })();
+    // Fecha de pago: puede venir como número (serial) o texto dd/mm/yyyy
+    const fechaPagoRaw = row[10];
+    let fechaPago = null;
+    if(typeof fechaPagoRaw === 'number'){
+      fechaPago = excelDateToDate(fechaPagoRaw);
+    } else {
+      const txt = String(t[10]||fechaPagoRaw||'').trim();
+      const m = txt.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if(m) fechaPago = new Date(Number(m[3]), Number(m[2])-1, Number(m[1]));
+    }
+    return {
+      rowExcel: i + 4,
+      id: Number(rawId),
+      cliente: String(row[1]||'').trim(),
+      cuit: String(row[2]||'').trim(),
+      mesTxt, anio,
+      mesServicio: mesIdx + 1, // 1..12, 0 si inválido
+      anioServicio: anio,
+      monto,
+      estado,
+      tipo,
+      fechaPago,
+      mesPago: fechaPago ? fechaPago.getMonth()+1 : null,
+      anioPago: fechaPago ? fechaPago.getFullYear() : null,
+      concepto: String(row[7]||'').trim(),
+      nroFactura: String(t[6]||row[6]||'').trim(),
+    };
+  }).filter(Boolean);
+}
+
 async function loadAll(){
   if(!account){ setStatus('Sin conexión'); return; }
   setStatus('Cargando...');
@@ -641,9 +765,12 @@ async function loadAll(){
       try{ raw[k]=await readTable(t); rows[k]=raw[k].data; }
       catch(e){ console.warn('No se pudo leer',t,e); rows[k]=[]; raw[k]={headers:[],data:[],address:''}; }
     }
-    normalizeRows(); populateFilters(); renderAll();
+    normalizeRows();
+    // Cargar honorarios en paralelo (no bloquea si falla)
+    facturas = await loadHonorarios();
+    populateFilters(); renderAll();
     const now = new Date();
-    $('#lastSync').textContent = `Actualizado ${now.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} — ${rows.transacciones.length} movimientos`;
+    $('#lastSync').textContent = `Actualizado ${now.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} — ${rows.transacciones.length} movimientos · ${facturas.length} facturas`;
     setStatus('✓ Sincronizado', 'ok');
   }catch(e){
     setStatus('Error al cargar', 'err');
@@ -668,6 +795,7 @@ function populateFilters(){
   const keys=new Set();
   rows.transacciones.forEach(r=>{if(r.Año&&r.Mes) keys.add(monthKey(r.Año,r.Mes));});
   rows.cuotas.forEach(r=>{if(r.Año&&r.Mes) keys.add(monthKey(r.Año,r.Mes));});
+  facturas.forEach(f=>{ if(f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); });
   const sorted=[...keys].sort();
   const now=new Date(); const cur=monthKey(now.getFullYear(),now.getMonth()+1);
   $('#monthSelect').innerHTML = sorted.map(k=>`<option value="${k}"${k===cur?' selected':''}>${labelMonthKey(k)}</option>`).join('')||`<option value="${cur}">${labelMonthKey(cur)}</option>`;
@@ -681,22 +809,31 @@ function selectedMonthRows(){
   return {y,m,tx:rows.transacciones.filter(r=>Number(r.Año)===y&&Number(r.Mes)===m),cuotas:rows.cuotas.filter(r=>Number(r.Año)===y&&Number(r.Mes)===m)};
 }
 
-function renderAll(){ renderResumen(); renderIngresos(); renderGastos(); renderTarjetas(); renderDeudas(); renderInversiones(); renderAhorro(); }
+function renderAll(){ renderResumen(); renderIngresos(); renderGastos(); renderTarjetas(); renderDeudas(); renderInversiones(); renderAhorro(); renderHonorarios(); renderFlujoCaja(); }
 
 // ── RENDER RESUMEN ──
 function renderResumen(){
-  const {tx,cuotas}=selectedMonthRows();
-  const ingresos=tx.filter(r=>r.Tipo==='Ingreso'), gastos=tx.filter(r=>r.Tipo==='Gasto');
+  const {y,m,tx,cuotas}=selectedMonthRows();
+  const ingresosTx=tx.filter(r=>r.Tipo==='Ingreso'), gastos=tx.filter(r=>r.Tipo==='Gasto');
   const cardMonth=sum(cuotas,'MontoCuota');
   const totalGasto=sum(gastos,'Importe');
-  const totalIngreso=sum(ingresos,'Importe');
-  const net=totalIngreso-totalGasto-cardMonth;
+  const otrosIngresos=sum(ingresosTx,'Importe');
+
+  // Honorarios facturados del mes (mes de servicio)
+  const facturadosMes = facturas.filter(f=>f.anioServicio===y && f.mesServicio===m && f.tipo!=='Desestimada');
+  const totalFacturadoMes = sum(facturadosMes,'monto');
+  const cobradoMes = sum(facturadosMes.filter(f=>f.estado==='Pagada'),'monto');
+  const pendienteMes = sum(facturadosMes.filter(f=>f.estado==='Pendiente'),'monto');
+
+  const ingresosTotales = totalFacturadoMes + otrosIngresos;
+  const net = ingresosTotales - totalGasto - cardMonth;
   const netCls = net>=0?'green':'red';
+
   setKpis('#summaryKpis',[
-    {label:'Ingresos',value:fmtARS(totalIngreso),cls:'accent'},
+    {label:'Honorarios facturados',value:fmtARS(totalFacturadoMes),cls:'accent',hint:`Cobrado: ${fmtARS(cobradoMes)} · Pendiente: ${fmtARS(pendienteMes)}`},
     {label:'Gastos directos',value:fmtARS(totalGasto),cls:'red'},
     {label:'Cuotas TC del mes',value:fmtARS(cardMonth),cls:'warn'},
-    {label:'Saldo estimado',value:fmtARS(net),cls:netCls,hint:'Ingresos − gastos − cuotas'}
+    {label:'Saldo facturado',value:fmtARS(net),cls:netCls,hint:'Honorarios − gastos − cuotas'}
   ]);
 
   // Flujo histórico
@@ -737,6 +874,168 @@ function renderResumen(){
     const cls=r.Estado==='Cumplida'?'ok':(r.Estado==='Vencida'?'bad':'warn');
     return `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:13px;font-weight:600">${r.Meta}</span><span class="badge ${cls}">${r.Estado}</span></div><div class="progress"><div class="bar" style="width:${pct}%"></div></div><div style="font-size:11px;color:var(--muted)">${fmtNum(pct)}% de ${fmtMoney(r.MontoObjetivo,r.Moneda)}</div></div>`;
   }).join('') || '<p class="muted" style="font-size:13px">Sin metas registradas.</p>';
+}
+
+// ── RENDER HONORARIOS ──
+function renderHonorarios(){
+  const {y,m}=selectedMonthRows();
+  // Facturas del mes (por mes de servicio), excluyendo desestimadas
+  const delMes = facturas.filter(f=>f.anioServicio===y && f.mesServicio===m && f.tipo!=='Desestimada');
+  const totalMes = sum(delMes,'monto');
+  const pagadas = delMes.filter(f=>f.estado==='Pagada');
+  const pendientes = delMes.filter(f=>f.estado==='Pendiente');
+  const anuladas = delMes.filter(f=>f.estado==='Anulada');
+  const totalCobrado = sum(pagadas,'monto');
+  const totalPendiente = sum(pendientes,'monto');
+  const pctCobrado = totalMes>0 ? (totalCobrado/totalMes)*100 : 0;
+
+  setKpis('#honorariosKpis',[
+    {label:'Facturado del mes',value:fmtARS(totalMes),cls:'accent',hint:`${delMes.length} facturas`},
+    {label:'Cobrado',value:fmtARS(totalCobrado),cls:'green',hint:`${fmtNum(pctCobrado)}% del facturado`},
+    {label:'Pendiente de cobro',value:fmtARS(totalPendiente),cls:'warn',hint:`${pendientes.length} facturas`},
+    {label:'Anuladas',value:fmtARS(sum(anuladas,'monto')),cls:'red',hint:`${anuladas.length} facturas`}
+  ]);
+
+  // Donut: distribución por estado
+  makeChart('honorariosDonut',{
+    type:'doughnut',
+    data:{
+      labels:['Cobrado','Pendiente','Anulado'],
+      datasets:[{data:[totalCobrado, totalPendiente, sum(anuladas,'monto')],backgroundColor:['#22c55e','#f59e0b','#64748b'],borderWidth:1,borderColor:'#151f32'}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',boxWidth:12,font:{size:11}}}}}
+  });
+
+  // Bar por cliente
+  const porCliente = groupSum(delMes,'cliente','monto');
+  makeChart('honorariosClientes',{
+    type:'bar',
+    data:{labels:porCliente.map(x=>x.key),datasets:[{label:'Facturado',data:porCliente.map(x=>x.value),backgroundColor:'rgba(56,189,248,.7)',borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8',font:{size:10},callback:v=>fmtARS(v)},grid:{color:'rgba(37,49,73,.5)'}},y:{ticks:{color:'#94a3b8',font:{size:10}},grid:{display:false}}}}
+  });
+
+  // Tabla del mes
+  const estadoBadge = e => {
+    const cls = e==='Pagada'?'ok':e==='Anulada'?'bad':'warn';
+    return `<span class="badge ${cls}">${e}</span>`;
+  };
+  $('#honorariosTable').innerHTML = tableHtml(
+    ['Cliente','Concepto','Monto','Estado','Fecha pago'],
+    delMes.map(f=>({
+      Cliente: f.cliente,
+      Concepto: f.concepto,
+      Monto: fmtARS(f.monto),
+      Estado: estadoBadge(f.estado),
+      'Fecha pago': f.fechaPago ? f.fechaPago.toLocaleDateString('es-AR') : '—'
+    })),
+    (h,r)=>({val:r[h],cls:h==='Monto'?'num':''})
+  );
+
+  // Pendientes de cobro de TODOS los períodos
+  const todasPendientes = facturas.filter(f=>f.estado==='Pendiente' && f.tipo!=='Desestimada')
+    .sort((a,b)=>(a.anioServicio*100+a.mesServicio)-(b.anioServicio*100+b.mesServicio));
+  $('#honorariosPendientes').innerHTML = tableHtml(
+    ['Período','Cliente','Concepto','Monto'],
+    todasPendientes.map(f=>({
+      'Período': `${f.mesTxt} ${f.anioServicio}`,
+      Cliente: f.cliente,
+      Concepto: f.concepto,
+      Monto: fmtARS(f.monto)
+    })),
+    (h,r)=>({val:r[h],cls:h==='Monto'?'num':''})
+  );
+}
+
+// ── RENDER FLUJO DE CAJA ──
+function renderFlujoCaja(){
+  // Construir histórico mes a mes (últimos 12 meses + hasta donde haya datos)
+  const keys = new Set();
+  rows.transacciones.forEach(r=>{ if(r.Año&&r.Mes) keys.add(monthKey(r.Año,r.Mes)); });
+  rows.cuotas.forEach(r=>{ if(r.Año&&r.Mes) keys.add(monthKey(r.Año,r.Mes)); });
+  facturas.forEach(f=>{
+    if(f.tipo==='Desestimada') return;
+    if(f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio,f.mesServicio));
+    if(f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago,f.mesPago));
+  });
+  const sorted = [...keys].sort().slice(-12);
+
+  const facturadoSerie = sorted.map(k=>{
+    const [yy,mm] = k.split('-').map(Number);
+    return sum(facturas.filter(f=>f.anioServicio===yy && f.mesServicio===mm && f.tipo!=='Desestimada'),'monto');
+  });
+  const cobradoSerie = sorted.map(k=>{
+    const [yy,mm] = k.split('-').map(Number);
+    return sum(facturas.filter(f=>f.estado==='Pagada' && f.anioPago===yy && f.mesPago===mm && f.tipo!=='Desestimada'),'monto');
+  });
+  const otrosIngresoSerie = sorted.map(k=>{
+    const [yy,mm] = k.split('-').map(Number);
+    return sum(rows.transacciones.filter(r=>r.Tipo==='Ingreso' && r.Año===yy && r.Mes===mm),'Importe');
+  });
+  const gastoSerie = sorted.map(k=>{
+    const [yy,mm] = k.split('-').map(Number);
+    return sum(rows.transacciones.filter(r=>r.Tipo==='Gasto' && r.Año===yy && r.Mes===mm),'Importe');
+  });
+  const cuotaSerie = sorted.map(k=>{
+    const [yy,mm] = k.split('-').map(Number);
+    return sum(rows.cuotas.filter(r=>r.Año===yy && r.Mes===mm),'MontoCuota');
+  });
+  const saldoSerie = sorted.map((_,i)=>(facturadoSerie[i]+otrosIngresoSerie[i])-gastoSerie[i]-cuotaSerie[i]);
+
+  // KPIs: mes seleccionado + promedios
+  const {y,m} = selectedMonthRows();
+  const idxSel = sorted.indexOf(monthKey(y,m));
+  const facturadoSel = idxSel>=0 ? facturadoSerie[idxSel] : 0;
+  const cobradoSel = idxSel>=0 ? cobradoSerie[idxSel] : 0;
+  const gastoSel = idxSel>=0 ? gastoSerie[idxSel]+cuotaSerie[idxSel] : 0;
+  const saldoSel = idxSel>=0 ? saldoSerie[idxSel] : 0;
+  const promedioSaldo = saldoSerie.length ? saldoSerie.reduce((a,b)=>a+b,0)/saldoSerie.length : 0;
+
+  setKpis('#flujoKpis',[
+    {label:'Facturado del mes',value:fmtARS(facturadoSel),cls:'accent'},
+    {label:'Cobrado del mes',value:fmtARS(cobradoSel),cls:'green'},
+    {label:'Gasto total del mes',value:fmtARS(gastoSel),cls:'red',hint:'Gastos + cuotas TC'},
+    {label:'Saldo facturado',value:fmtARS(saldoSel),cls:saldoSel>=0?'green':'red',hint:`Promedio histórico: ${fmtARS(promedioSaldo)}`}
+  ]);
+
+  // Gráfico: barras facturado / cobrado / gastos+cuotas + línea de saldo
+  const gastosTotales = sorted.map((_,i)=>gastoSerie[i]+cuotaSerie[i]);
+  makeChart('flujoChart',{
+    type:'bar',
+    data:{
+      labels: sorted.map(labelMonthKey),
+      datasets:[
+        {label:'Facturado', data:facturadoSerie, backgroundColor:'rgba(56,189,248,.7)', borderRadius:4, order:2},
+        {label:'Cobrado', data:cobradoSerie, backgroundColor:'rgba(34,197,94,.7)', borderRadius:4, order:2},
+        {label:'Gastos + cuotas TC', data:gastosTotales, backgroundColor:'rgba(248,113,113,.7)', borderRadius:4, order:2},
+        {label:'Saldo facturado', data:saldoSerie, type:'line', borderColor:'#fbbf24', backgroundColor:'#fbbf24', tension:.3, pointRadius:4, borderWidth:2, order:1, yAxisID:'y'}
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',boxWidth:12,font:{size:11}}}},
+      scales:{
+        x:{ticks:{color:'#94a3b8',font:{size:10}},grid:{color:'rgba(37,49,73,.3)'}},
+        y:{ticks:{color:'#94a3b8',font:{size:10},callback:v=>fmtARS(v)},grid:{color:'rgba(37,49,73,.3)'}}
+      }
+    }
+  });
+
+  // Tabla comparativa
+  const filas = sorted.map((k,i)=>({
+    'Mes': labelMonthKey(k),
+    'Facturado': fmtARS(facturadoSerie[i]),
+    'Cobrado': fmtARS(cobradoSerie[i]),
+    'Otros ingresos': fmtARS(otrosIngresoSerie[i]),
+    'Gastos': fmtARS(gastoSerie[i]),
+    'Cuotas TC': fmtARS(cuotaSerie[i]),
+    'Saldo': fmtARS(saldoSerie[i])
+  })).reverse(); // más reciente primero
+
+  $('#flujoTable').innerHTML = tableHtml(
+    ['Mes','Facturado','Cobrado','Otros ingresos','Gastos','Cuotas TC','Saldo'],
+    filas,
+    (h,r)=>({val:r[h],cls:h!=='Mes'?'num':''})
+  );
 }
 
 // ── RENDER INGRESOS ──
