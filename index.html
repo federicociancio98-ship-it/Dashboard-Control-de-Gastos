@@ -759,23 +759,71 @@ function parseHonorarios(range){
 async function loadAll(){
   if(!account){ setStatus('Sin conexión'); return; }
   setStatus('Cargando...');
+  // Inicializar valores por defecto para que renderAll nunca falle
+  ['transacciones','tarjetas','cuotas','deudas','inversiones','ahorro'].forEach(k=>{
+    if(!rows[k]) rows[k]=[];
+    if(!raw[k]) raw[k]={headers:[],data:[],address:''};
+  });
+  facturas = facturas || [];
+
+  // 1) Abrir workbook de gastos. Si falla, seguimos solo con honorarios.
+  let workbookOk = false;
   try{
     await openWorkbook();
+    workbookOk = true;
+  }catch(e){
+    console.error('No se pudo abrir el Excel de gastos:', e);
+    showErrorBanner('Excel de gastos: '+(e.message||e));
+  }
+
+  // 2) Leer tablas de gastos (cada una con su propio try/catch)
+  if(workbookOk){
     for(const [k,t] of Object.entries(TABLES)){
       try{ raw[k]=await readTable(t); rows[k]=raw[k].data; }
-      catch(e){ console.warn('No se pudo leer',t,e); rows[k]=[]; raw[k]={headers:[],data:[],address:''}; }
+      catch(e){ console.warn('No se pudo leer tabla',t,':',e.message); rows[k]=[]; raw[k]={headers:[],data:[],address:''}; }
     }
     normalizeRows();
-    // Cargar honorarios en paralelo (no bloquea si falla)
-    facturas = await loadHonorarios();
-    populateFilters(); renderAll();
-    const now = new Date();
-    $('#lastSync').textContent = `Actualizado ${now.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} — ${rows.transacciones.length} movimientos · ${facturas.length} facturas`;
-    setStatus('✓ Sincronizado', 'ok');
-  }catch(e){
-    setStatus('Error al cargar', 'err');
-    console.error(e);
   }
+
+  // 3) Cargar honorarios (independiente, nunca bloquea)
+  try{
+    facturas = await loadHonorarios();
+  }catch(e){
+    console.warn('No se pudo cargar honorarios:', e.message);
+    facturas = [];
+  }
+
+  // 4) Render
+  try{
+    populateFilters();
+    renderAll();
+  }catch(e){
+    console.error('Error al renderizar:', e);
+    showErrorBanner('Render: '+(e.message||e));
+  }
+
+  const now = new Date();
+  $('#lastSync').textContent = `Actualizado ${now.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} — ${rows.transacciones.length} movimientos · ${facturas.length} facturas`;
+
+  if(workbookOk && rows.transacciones.length>0){
+    setStatus('✓ Sincronizado', 'ok');
+  }else if(facturas.length>0){
+    setStatus('Parcial: solo honorarios', 'err');
+  }else{
+    setStatus('Error al cargar', 'err');
+  }
+}
+
+function showErrorBanner(msg){
+  let b = document.getElementById('errorBanner');
+  if(!b){
+    b = document.createElement('div');
+    b.id = 'errorBanner';
+    b.style.cssText = 'position:fixed;bottom:20px;left:20px;right:20px;background:#7f1d1d;color:#fee;padding:12px 16px;border-radius:10px;font-size:12px;z-index:9999;line-height:1.4;max-height:40vh;overflow:auto';
+    b.onclick = ()=>b.remove();
+    document.body.appendChild(b);
+  }
+  b.innerHTML += `<div style="margin-bottom:6px"><b>⚠</b> ${msg}</div>`;
 }
 
 function normalizeRows(){
