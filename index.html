@@ -542,38 +542,24 @@ function showApp(){
   $('#loginScreen').classList.add('hidden');
 }
 
-async function login(){
-  try{
-    const r = await msalApp.loginPopup({ scopes: CONFIG.scopes });
-    account = r.account;
-    showApp();
-    await loadAll();
-  }catch(e){
-    setStatus('Error al iniciar sesión: '+e.message, 'err');
-    $('#loadingScreen').classList.add('hidden');
-    $('#loginScreen').classList.remove('hidden');
-  }
+function login(){
+  sessionStorage.setItem('loginPending','1');
+  msalApp.loginRedirect({ scopes: CONFIG.scopes });
 }
 
 async function logout(){
   if(!confirm('¿Cerrar sesión y desconectar la cuenta?')) return;
-  msalApp.getAllAccounts().forEach(()=>msalApp.setActiveAccount(null));
-  localStorage.clear();
-  location.reload();
+  sessionStorage.clear();
+  msalApp.logoutRedirect({ postLogoutRedirectUri: window.location.origin });
 }
 
 async function getToken(){
   try{
     return (await msalApp.acquireTokenSilent({scopes:CONFIG.scopes, account})).accessToken;
   }catch(e){
-    try{
-      const r = await msalApp.acquireTokenPopup({scopes:CONFIG.scopes, account});
-      account = r.account;
-      return r.accessToken;
-    }catch(e2){
-      setStatus('Sesión expirada, volvé a iniciar sesión', 'err');
-      return null;
-    }
+    sessionStorage.setItem('loginPending','1');
+    await msalApp.acquireTokenRedirect({scopes:CONFIG.scopes, account});
+    return null;
   }
 }
 
