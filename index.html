@@ -543,24 +543,37 @@ function showApp(){
 }
 
 async function login(){
-  setLoading('Redirigiendo a Microsoft...');
-  $('#loginScreen').classList.add('hidden');
-  $('#loadingScreen').classList.remove('hidden');
-  await msalApp.loginRedirect({ scopes: CONFIG.scopes });
+  try{
+    const r = await msalApp.loginPopup({ scopes: CONFIG.scopes });
+    account = r.account;
+    showApp();
+    await loadAll();
+  }catch(e){
+    setStatus('Error al iniciar sesión: '+e.message, 'err');
+    $('#loadingScreen').classList.add('hidden');
+    $('#loginScreen').classList.remove('hidden');
+  }
 }
 
 async function logout(){
   if(!confirm('¿Cerrar sesión y desconectar la cuenta?')) return;
-  await msalApp.logoutRedirect();
+  msalApp.getAllAccounts().forEach(()=>msalApp.setActiveAccount(null));
+  localStorage.clear();
+  location.reload();
 }
 
 async function getToken(){
   try{
     return (await msalApp.acquireTokenSilent({scopes:CONFIG.scopes, account})).accessToken;
   }catch(e){
-    // Token silencioso falló, refrescar con redirect
-    await msalApp.acquireTokenRedirect({scopes:CONFIG.scopes, account});
-    return null;
+    try{
+      const r = await msalApp.acquireTokenPopup({scopes:CONFIG.scopes, account});
+      account = r.account;
+      return r.accessToken;
+    }catch(e2){
+      setStatus('Sesión expirada, volvé a iniciar sesión', 'err');
+      return null;
+    }
   }
 }
 
