@@ -93,9 +93,9 @@
 
     <section id="setup" class="panel">
       <div class="card"><h3>Configuración necesaria antes de subirlo</h3><div class="help">
-        <p>En este archivo hay dos valores que tenés que editar antes de deployar:</p>
-        <p><code>CONFIG.clientId</code>: Client ID de la App Registration de Azure/Entra.</p>
-        <p><code>CONFIG.excelPath</code>: ruta del archivo en tu OneDrive, por ejemplo <code>/Apps/Dashboard/Gastos 2026.xlsx</code>.</p>
+        <p>El archivo ya tiene configurado el Client ID de Azure/Entra y la ruta del Excel en OneDrive.</p>
+        <p><code>CONFIG.clientId</code>: <code>6f8ce07a-aac4-42df-96a8-0f28750607a5</code>.</p>
+        <p><code>CONFIG.excelPath</code>: ruta configurada del archivo en OneDrive: <code>/0 - Trabajo/CONTROL DE GASTOS/Gastos 2026.xlsx</code>.</p>
         <p>El dashboard no usa backend. El navegador se autentica con Microsoft, lee las tablas del Excel y escribe cambios mediante Microsoft Graph. Vercel solo sirve este HTML estático.</p>
       </div></div>
     </section>
@@ -103,8 +103,8 @@
 </div>
 <script>
 const CONFIG = {
-  clientId: 'PEGAR_ACA_CLIENT_ID_DE_AZURE',
-  excelPath: '/Gastos 2026.xlsx',
+  clientId: '6f8ce07a-aac4-42df-96a8-0f28750607a5',
+  excelPath: '/0 - Trabajo/CONTROL DE GASTOS/Gastos 2026.xlsx',
   scopes: ['Files.ReadWrite', 'User.Read']
 };
 const TABLES = {
