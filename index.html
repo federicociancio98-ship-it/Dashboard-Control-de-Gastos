@@ -5,7 +5,36 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Gastos 2026</title>
-  <script src="https://alcdn.msauth.net/browser/3.10.0/js/msal-browser.min.js"></script>
+  <script>
+  // Cargador robusto de MSAL con fallback. Si el CDN principal falla,
+  // intenta con jsdelivr y luego unpkg antes de mostrar error.
+  window.MSAL_LOAD_PROMISE = (function(){
+    const SOURCES = [
+      'https://alcdn.msauth.net/browser/3.10.0/js/msal-browser.min.js',
+      'https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js',
+      'https://unpkg.com/@azure/msal-browser@3.10.0/lib/msal-browser.min.js'
+    ];
+    function loadFrom(url){
+      return new Promise((resolve, reject)=>{
+        const s = document.createElement('script');
+        s.src = url;
+        s.onload = ()=> window.msal ? resolve(url) : reject(new Error('Loaded but msal undefined'));
+        s.onerror = ()=> reject(new Error('Failed to load '+url));
+        document.head.appendChild(s);
+      });
+    }
+    return (async ()=>{
+      for(const url of SOURCES){
+        try{
+          await loadFrom(url);
+          console.log('MSAL cargado desde:', url);
+          return true;
+        }catch(e){ console.warn(e.message); }
+      }
+      throw new Error('No se pudo cargar MSAL desde ningún CDN');
+    })();
+  })();
+</script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root{
@@ -543,8 +572,17 @@ function showApp(){
 }
 
 function login(){
-  sessionStorage.setItem('loginPending','1');
-  msalApp.loginRedirect({ scopes: CONFIG.scopes });
+  if(!msalApp){
+    alert('La librería de autenticación no se cargó. Refrescá la página.');
+    return;
+  }
+  try{
+    sessionStorage.setItem('loginPending','1');
+    msalApp.loginRedirect({ scopes: CONFIG.scopes });
+  }catch(e){
+    alert('Error al iniciar sesión: '+e.message);
+    console.error(e);
+  }
 }
 
 async function logout(){
@@ -788,10 +826,22 @@ $('#loginBtn').addEventListener('click', login);
 $('#logoutBtn').addEventListener('click', logout);
 $('#showOrigin').textContent = window.location.origin;
 
-initAuth().catch(err=>{
-  console.error(err);
-  $('#loadingScreen').classList.add('hidden');
-  $('#loginScreen').classList.remove('hidden');
+// Esperar a que MSAL cargue antes de inicializar
+window.MSAL_LOAD_PROMISE
+  .then(()=> initAuth())
+  .catch(err=>{
+    console.error('Error fatal:', err);
+    $('#loadingScreen').classList.add('hidden');
+    $('#loginScreen').classList.remove('hidden');
+    const errBox = document.createElement('div');
+    errBox.style.cssText = 'position:fixed;bottom:20px;left:20px;right:20px;background:#7f1d1d;color:#fee;padding:12px 16px;border-radius:10px;font-size:13px;z-index:9999;line-height:1.4';
+    errBox.innerHTML = '<b>Error al cargar:</b> '+(err.message||err)+'<br><span style="opacity:.8;font-size:11px">Probá refrescar la página. Si persiste, puede ser un problema temporal de red.</span>';
+    document.body.appendChild(errBox);
+  });
+
+// Capturar errores globales para que se vean en el dashboard
+window.addEventListener('error', e=>{
+  console.error('Error global:', e.message, e.error);
 });
 </script>
 
