@@ -486,12 +486,19 @@ function a1Parts(address) {
 function tableKeyFromName(tableName) {
   return Object.entries(TABLES).find(([,v]) => v === tableName)?.[0] || null;
 }
+async function patchRange(sheet, address, values2d) {
+  const encAddr = encodeURIComponent(address);
+  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${encAddr}')`, {
+    method: 'PATCH', body: JSON.stringify({ values: values2d })
+  });
+}
 async function addRow(tableName, values) {
   try {
     await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, { method: 'POST', body: JSON.stringify({ values: [values] }) });
   } catch (e) {
-    // Fallback: algunos libros devueltos por Graph rechazan rows/add por rango interno.
-    // Se agranda la tabla una fila y se escribe el registro en esa fila.
+    // Fallback robusto para Microsoft Graph: algunos libros rechazan rows/add
+    // cuando el rango interno de la tabla queda desfasado. En ese caso se
+    // redimensiona la tabla y se escribe la fila con range PATCH codificado.
     const key = tableKeyFromName(tableName);
     const sheet = key ? SHEETS[key] : null;
     if (!sheet || !raw[key]?.address) throw e;
@@ -499,14 +506,28 @@ async function addRow(tableName, values) {
     const cols = parts.endColNum - parts.startColNum + 1;
     if (values.length !== cols) throw e;
     const nextRow = parts.endRow + 1;
-    const newAddress = `${sheet}!${parts.startCol}${parts.startRow}:${parts.endCol}${nextRow}`;
-    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/resize`, { method: 'POST', body: JSON.stringify({ address: newAddress }) });
-    await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${parts.startCol}${nextRow}:${parts.endCol}${nextRow}')`, { method: 'PATCH', body: JSON.stringify({ values: [values] }) });
-    raw[key].address = newAddress;
+    const newAddress = `${parts.startCol}${parts.startRow}:${parts.endCol}${nextRow}`;
+    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/resize`, {
+      method: 'POST', body: JSON.stringify({ address: newAddress })
+    });
+    await patchRange(sheet, `${parts.startCol}${nextRow}:${parts.endCol}${nextRow}`, [values]);
+    raw[key].address = `${sheet}!${newAddress}`;
   }
 }
+async function writeFirstBlankDataRowIfAvailable(key, values) {
+  const sheet = SHEETS[key];
+  if (!sheet || !raw[key]?.address) return false;
+  const parts = a1Parts(raw[key].address);
+  const cols = parts.endColNum - parts.startColNum + 1;
+  const hasOneBlankDataRow = (parts.endRow - parts.startRow) >= 1 && (rows[key] || []).length === 0;
+  if (!hasOneBlankDataRow || values.length !== cols) return false;
+  const firstDataRow = parts.startRow + 1;
+  await patchRange(sheet, `${parts.startCol}${firstDataRow}:${parts.endCol}${firstDataRow}`, [values]);
+  return true;
+}
 async function patchCell(sheet, address, value) {
-  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${address}')`, { method: 'PATCH', body: JSON.stringify({ values: [[value]] }) });
+  const encAddr = encodeURIComponent(address);
+  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${encAddr}')`, { method: 'PATCH', body: JSON.stringify({ values: [[value]] }) });
 }
 function parseStartRow(address) {
   const a = (address || '').split('!').pop().split(':')[0].replace(/'/g, '');
@@ -793,7 +814,9 @@ async function upsertResumenReal(tarjeta, y, m, monto, estado = 'Pendiente', fec
     await patchCell(SHEETS.resumenesTC, 'H' + r, medioPago || '');
     await patchCell(SHEETS.resumenesTC, 'I' + r, notas || '');
   } else {
-    await addRow(TABLES.resumenesTC, [nextId(rows.resumenesTC || []), Number(y), Number(m), tarjeta, Number(monto || 0), estado || 'Pendiente', fechaPago || '', medioPago || '', notas || '']);
+    const row = [nextId(rows.resumenesTC || []), Number(y), Number(m), tarjeta, Number(monto || 0), estado || 'Pendiente', fechaPago || '', medioPago || '', notas || ''];
+    const wroteBlank = await writeFirstBlankDataRowIfAvailable('resumenesTC', row);
+    if (!wroteBlank) await addRow(TABLES.resumenesTC, row);
   }
 }
 async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas) {
