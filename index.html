@@ -308,13 +308,15 @@ const TABLES = {
   transacciones: 'tbl_Transacciones', tarjetas: 'tbl_Tarjetas', cuotas: 'tbl_CuotasMensuales',
   deudas: 'tbl_Deudas', inversiones: 'tbl_Inversiones', ahorro: 'tbl_Ahorro',
   fijos: 'tbl_GastosFijos', pagos: 'tbl_PagosPendientes',
-  tarjetasConfig: 'tbl_TarjetasAdmin', resumenesTC: 'tbl_ResumenesTarjeta'
+  tarjetasConfig: 'tbl_TarjetasAdmin', resumenesTC: 'tbl_ResumenesTarjeta',
+  origenesIngresos: 'tbl_OrigenesIngresos'
 };
 const SHEETS = {
   transacciones: 'DATA_Transacciones', tarjetas: 'DATA_Tarjetas', cuotas: 'DATA_CuotasMensuales',
   deudas: 'DATA_Deudas', inversiones: 'DATA_Inversiones', ahorro: 'DATA_Ahorro',
   fijos: 'DATA_GastosFijos', pagos: 'DATA_PagosPendientes',
-  tarjetasConfig: 'DATA_TarjetasConfig', resumenesTC: 'DATA_ResumenesTarjeta'
+  tarjetasConfig: 'DATA_TarjetasConfig', resumenesTC: 'DATA_ResumenesTarjeta',
+  origenesIngresos: 'DATA_OrigenesIngresos'
 };
 const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
 const MES_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -382,7 +384,108 @@ const CLIENTES_CARPETAS = {
   }
 };
 
-const PDF_NAME_REGEX = /^(ACEBAL|CA|PM|ZAVALLA|MATTFRA|CONSORCIO)_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC) (\d{4})\.pdf$/i;
+const CATEGORIAS_FACTURACION = ['COMUNAS','EMPRESAS','PERITAJE','PARTICULARES','OTROS INGRESOS'];
+
+function fallbackOrigenesIngresos() {
+  return [
+    {IDOrigen:1, CategoriaIngreso:'EMPRESAS', NombreOrigen:'Mattfra Constructora', CUIT:'30-71573759-7', Recurrente:'SI', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/04 - MATTFRA/0000_Facturación PROPIA', PrefijoPDF:'MATTFRA', Notas:'Cliente recurrente mensual'},
+    {IDOrigen:2, CategoriaIngreso:'COMUNAS', NombreOrigen:'Coronel Arnold', CUIT:'30-67396955-7', Recurrente:'SI', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/00_COMUNA DE CORONEL ARNOLD/0000_Facturación PROPIA', PrefijoPDF:'CA', Notas:'Cliente recurrente mensual'},
+    {IDOrigen:3, CategoriaIngreso:'COMUNAS', NombreOrigen:'Pueblo Muñoz', CUIT:'30-67747999-6', Recurrente:'SI', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/00_COMUNA DE PUEBLO MUÑOZ/0000_Facturación PROPIA', PrefijoPDF:'PM', Notas:'Cliente recurrente mensual'},
+    {IDOrigen:4, CategoriaIngreso:'COMUNAS', NombreOrigen:'Comuna de Zavalla', CUIT:'30-65412190-3', Recurrente:'SI', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/00_COMUNA DE ZAVALLA/0000_Facturación PROPIA', PrefijoPDF:'ZAVALLA', Notas:'Cliente recurrente mensual'},
+    {IDOrigen:5, CategoriaIngreso:'COMUNAS', NombreOrigen:'Comuna de Acebal', CUIT:'30-67747357-2', Recurrente:'SI', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/00_COMUNA DE ACEBAL/0000_Facturación PROPIA', PrefijoPDF:'ACEBAL', Notas:'Cliente recurrente mensual; puede tener ingreso compartido'},
+    {IDOrigen:6, CategoriaIngreso:'EMPRESAS', NombreOrigen:'CIVING', CUIT:'', Recurrente:'NO', Activo:'SI', AuditarPDF:'NO', CarpetaPDF:'', PrefijoPDF:'CIVING', Notas:'Servicios digitales/consultoría propios'},
+    {IDOrigen:7, CategoriaIngreso:'PERITAJE', NombreOrigen:'Consorcio Pasaje Apóstoles 1229', CUIT:'30-71717532-4', Recurrente:'NO', Activo:'SI', AuditarPDF:'SI', CarpetaPDF:'0 - Trabajo/06_PERITAJE PODER JUDICIAL/01 - 20260409 _ Consorcio/0000_Facturación PROPIA', PrefijoPDF:'CONSORCIO', Notas:'Peritaje judicial; nunca compartido'}
+  ];
+}
+function origenesIngresoRows() {
+  const data = (rows.origenesIngresos || []).filter(r => String(r.Activo || 'SI').toUpperCase() !== 'NO');
+  return data.length ? data : fallbackOrigenesIngresos();
+}
+function origenByName(nombre) {
+  const n = String(nombre || '').trim().toLowerCase();
+  return origenesIngresoRows().find(o => String(o.NombreOrigen || '').trim().toLowerCase() === n) || null;
+}
+function inferCategoriaIngreso(cliente, notas='', concepto='') {
+  const tag = String(notas || '').match(/\[CAT:([^\]]+)\]/i);
+  if (tag) return tag[1].trim().toUpperCase();
+  const o = origenByName(cliente);
+  if (o?.CategoriaIngreso) return String(o.CategoriaIngreso).toUpperCase();
+  const s = `${cliente || ''} ${concepto || ''} ${notas || ''}`.toLowerCase();
+  if (s.includes('comuna') || s.includes('coronel arnold') || s.includes('pueblo muñoz') || s.includes('zavalla') || s.includes('acebal')) return 'COMUNAS';
+  if (s.includes('mattfra') || s.includes('civing') || s.includes('constructora') || s.includes('empresa')) return 'EMPRESAS';
+  if (s.includes('perit') || s.includes('cuij') || s.includes('consorcio') || s.includes('llano') || s.includes('gómez') || s.includes('gomez') || s.includes('poder judicial')) return 'PERITAJE';
+  if (s.includes('particular') || s.includes('consulta técnica') || s.includes('consulta tecnica')) return 'PARTICULARES';
+  return 'OTROS INGRESOS';
+}
+function clientesRecurrentesHonorarios() {
+  const cfg = origenesIngresoRows().filter(o => String(o.Recurrente || '').toUpperCase() === 'SI').map(o => o.NombreOrigen).filter(Boolean);
+  return cfg.length ? cfg : CLIENTES_RECURRENTES;
+}
+function clienteInfoHonorarios(nombre) {
+  const o = origenByName(nombre);
+  if (o) {
+    return {
+      cuit: o.CUIT || '',
+      folder: o.CarpetaPDF || '',
+      prefijo: o.PrefijoPDF || '',
+      categoriaIngreso: o.CategoriaIngreso || inferCategoriaIngreso(nombre),
+      recurrente: o.Recurrente || 'NO',
+      auditarPDF: o.AuditarPDF || 'NO'
+    };
+  }
+  return { ...(CLIENTES_CARPETAS[nombre] || {}), categoriaIngreso: inferCategoriaIngreso(nombre) };
+}
+function clientesCarpetasHonorarios() {
+  const out = {};
+  origenesIngresoRows()
+    .filter(o => String(o.AuditarPDF || '').toUpperCase() === 'SI' && o.CarpetaPDF && o.PrefijoPDF)
+    .forEach(o => { out[o.NombreOrigen] = { folder:o.CarpetaPDF, prefijo:o.PrefijoPDF, cuit:o.CUIT || '', categoriaIngreso:o.CategoriaIngreso || inferCategoriaIngreso(o.NombreOrigen) }; });
+  if (Object.keys(out).length) return out;
+  return CLIENTES_CARPETAS;
+}
+function tipoLabelHonorarios(tipo) {
+  const s = String(tipo || 'Propia').toLowerCase();
+  if (s.startsWith('comp')) return 'Compartido';
+  if (s.startsWith('sin') || s.startsWith('no fact')) return 'No facturado';
+  if (s.startsWith('des')) return 'Desestimado';
+  return 'Facturado';
+}
+function tipoOptionsHonorarios(categoria, selected='Sin Factura') {
+  const opts = categoria === 'PERITAJE'
+    ? [['Propia','Facturado'], ['Sin Factura','No facturado']]
+    : [['Propia','Facturado'], ['Sin Factura','No facturado'], ['Compartida','Compartido']];
+  return opts.map(([v,l]) => `<option value="${v}" ${v === selected ? 'selected' : ''}>${l}</option>`).join('');
+}
+function sanitizePrefijo(origen, categoria) {
+  const base = String(origen || categoria || 'INGRESO')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-zA-Z0-9]+/g,'_')
+    .replace(/^_+|_+$/g,'')
+    .toUpperCase()
+    .substring(0,18);
+  return base || 'INGRESO';
+}
+async function ensureOrigenIngresoRegistered({categoria, nombre, cuit='', recurrente='NO', auditarPDF='NO', carpetaPDF='', prefijoPDF='', notas=''}) {
+  if (!nombre) return;
+  const exists = origenByName(nombre);
+  if (exists) return;
+  if (!TABLES.origenesIngresos) return;
+  const current = rows.origenesIngresos || [];
+  const id = Math.max(0, ...current.map(r => Number(r.IDOrigen || 0))) + 1;
+  const pref = prefijoPDF || sanitizePrefijo(nombre, categoria);
+  const row = [id, categoria || inferCategoriaIngreso(nombre), nombre, cuit || '', recurrente, 'SI', auditarPDF, carpetaPDF, pref, notas || 'Alta desde dashboard'];
+  try {
+    await addRow(TABLES.origenesIngresos, row);
+    rows.origenesIngresos = [...current, {
+      IDOrigen:id, CategoriaIngreso:row[1], NombreOrigen:nombre, CUIT:cuit || '', Recurrente:recurrente, Activo:'SI', AuditarPDF:auditarPDF, CarpetaPDF:carpetaPDF, PrefijoPDF:pref, Notas:row[9]
+    }];
+  } catch(e) {
+    console.warn('No se pudo registrar el nuevo origen de ingreso:', e);
+  }
+}
+
+// Formato esperado: PREFIJO_AAAAMMDD_MES AÑO.pdf. El prefijo se valida contra la tabla de orígenes.
+const PDF_NAME_REGEX = /^([A-Z0-9]{2,24})_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC) (\d{4})\.pdf$/i;
 
 // Paleta de colores Honorarios para charts
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
@@ -680,6 +783,7 @@ function parseHonorarios(range) {
       nroFactura: String(t[6] || row[6] || '').trim(),
       notas: String(row[11] || '').trim(),
       pdf: String(row[12] || '').trim(),
+      categoriaIngreso: inferCategoriaIngreso(String(row[1] || '').trim(), String(row[11] || '').trim(), String(row[7] || '').trim()),
     };
   }).filter(Boolean);
 }
@@ -731,7 +835,7 @@ function detectFaltantesHonorarios(y, m) {
       .filter(f => f.mesServicio === per.m && f.anioServicio === per.y)
       .map(f => f.cliente)
   );
-  return CLIENTES_RECURRENTES
+  return clientesRecurrentesHonorarios()
     .filter(c => !cubiertos.has(c))
     .map(c => ({ cliente: c, mes: per.mesTxt, anio: per.y, emisionY: y, emisionM: m }));
 }
@@ -766,6 +870,9 @@ async function patchHonorariosRow(rowExcel, valuesArr) {
 }
 async function appendHonorariosRow(rowData) {
   const { id, row } = nextHonorariosRowAndId();
+  const cat = rowData.categoriaIngreso || inferCategoriaIngreso(rowData.cliente, rowData.notas, rowData.concepto);
+  const tag = cat ? `[CAT:${cat}] ` : '';
+  const notasFinal = `${tag}${rowData.notas || ''}`.trim();
   const arr = [
     id,
     rowData.cliente || '',
@@ -778,7 +885,7 @@ async function appendHonorariosRow(rowData) {
     Number(rowData.monto) || 0,
     rowData.estado || 'Pendiente',
     rowData.fechaPago || '',
-    rowData.notas || '',
+    notasFinal,
     rowData.pdf || '',
     rowData.tipo || 'Propia',
   ];
@@ -861,7 +968,7 @@ async function guardarPagoHonorarios(rowExcel, fechaInput) {
   } catch (e) { showError('No se pudo registrar el cobro: ' + e.message); setStatus('Error','err'); }
 }
 async function desestimarHonorarios(cliente, mes, anio) {
-  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  const cinfo = clienteInfoHonorarios(cliente);
   try {
     await appendHonorariosRow({
       cliente,
@@ -877,20 +984,24 @@ async function desestimarHonorarios(cliente, mes, anio) {
       notas: 'Sin emisión propia este período',
       pdf: '',
       tipo: 'Desestimada',
+      categoriaIngreso: cinfo.categoriaIngreso || inferCategoriaIngreso(faltante.cliente),
     });
     setStatus('✓ Período desestimado', 'ok');
   } catch (e) { showError('No se pudo desestimar: ' + e.message); setStatus('Error','err'); }
 }
 function openIngresoHonorariosModal(cliente, mes, anio) {
-  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  const cinfo = clienteInfoHonorarios(cliente);
+  const categoria = cinfo.categoriaIngreso || inferCategoriaIngreso(cliente);
+  const defaultTipo = categoria === 'PERITAJE' ? 'Propia' : 'Compartida';
   $('#modalRoot').innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
       <div class="modal">
-        <h2>Registrar ingreso sin factura propia</h2>
-        <div class="modal-sub">${escapeHtml(cliente)} · ${escapeHtml(mes)} ${anio}. Útil cuando factura un colega pero vos percibís tu parte.</div>
+        <h2>Registrar ingreso del período</h2>
+        <div class="modal-sub">${escapeHtml(cliente)} · ${escapeHtml(mes)} ${anio}. Categoría: <strong>${escapeHtml(categoria)}</strong>${categoria === 'PERITAJE' ? ' · En peritajes no se usa ingreso compartido.' : ''}</div>
         <form id="ingHonorariosForm">
+          <input type="hidden" name="categoriaIngreso" value="${escapeHtml(categoria)}">
           <div class="form-row">
-            <div class="form-group"><label>Tipo</label><select name="tipo"><option value="Compartida">Compartida</option><option value="Sin Factura">Sin factura</option></select></div>
+            <div class="form-group"><label>Tipo</label><select name="tipo">${tipoOptionsHonorarios(categoria, defaultTipo)}</select></div>
             <div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div>
           </div>
           <div class="form-row">
@@ -899,7 +1010,7 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
           </div>
           <div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" required></div>
           <div class="form-group"><label>Concepto</label><input name="concepto" value="Ingreso ${escapeHtml(mes)} ${anio}"></div>
-          <div class="form-group"><label>Notas</label><input name="notas" placeholder="Ej: factura emitida por colega"></div>
+          <div class="form-group"><label>Notas</label><input name="notas" placeholder="Ej: factura emitida por colega / adelanto / regulación"></div>
           <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Registrar</button></div>
         </form>
       </div>
@@ -908,6 +1019,7 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
     try {
+      await ensureOrigenIngresoRegistered({categoria:fd.categoriaIngreso, nombre:cliente, cuit:cinfo.cuit || '', recurrente:cinfo.recurrente || 'NO', auditarPDF:cinfo.auditarPDF || 'NO', carpetaPDF:cinfo.folder || '', prefijoPDF:cinfo.prefijo || ''});
       await appendHonorariosRow({
         cliente,
         cuit: cinfo.cuit || '',
@@ -921,7 +1033,8 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
         fechaPago: fd.estado === 'Pagada' ? inputDateToDDMMYYYY(fd.fechaPago || todayInputValue()) : '',
         notas: fd.notas || '',
         pdf: '',
-        tipo: fd.tipo || 'Compartida',
+        tipo: fd.tipo || 'Sin Factura',
+        categoriaIngreso: fd.categoriaIngreso || categoria,
       });
       closeModal();
       setStatus('✓ Ingreso registrado', 'ok');
@@ -931,35 +1044,59 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
 function openIngresoHonorariosLibreModal() {
   const { y, m } = selMonth();
   const per = selectedServicePeriodForBilling(y, m);
-  const clientes = [...new Set([...CLIENTES_RECURRENTES, ...facturas.map(f => f.cliente).filter(Boolean)])].sort();
+  const origenes = origenesIngresoRows().map(o => o.NombreOrigen).filter(Boolean).sort();
   $('#modalRoot').innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
       <div class="modal">
-        <h2>Registrar ingreso manual / sin factura</h2>
-        <div class="modal-sub">Usalo para trabajos cobrados sin factura propia o ingresos no detectados automáticamente.</div>
+        <h2>Registrar ingreso manual</h2>
+        <div class="modal-sub">Usalo para trabajos cobrados con o sin factura, peritajes, particulares o ingresos no detectados automáticamente.</div>
         <form id="ingHonorariosLibreForm">
-          <div class="form-group"><label>Cliente / origen</label><input list="clientesHonorariosList" name="cliente" required placeholder="Ej: Comuna de Acebal"><datalist id="clientesHonorariosList">${clientes.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist></div>
+          <div class="form-row">
+            <div class="form-group"><label>Categoría de ingreso</label><select name="categoriaIngreso" id="catIngresoLibre">${CATEGORIAS_FACTURACION.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
+            <div class="form-group"><label>Tipo</label><select name="tipo" id="tipoIngresoLibre">${tipoOptionsHonorarios('COMUNAS', 'Sin Factura')}</select></div>
+          </div>
+          <div class="form-group"><label>Cliente / caso / origen</label><input list="clientesHonorariosList" name="cliente" required placeholder="Ej: Llano Verónica — daños depto"><datalist id="clientesHonorariosList">${origenes.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist></div>
           <div class="form-row"><div class="form-group"><label>Período del servicio</label><select name="mes">${MESES_HON.map(mm => `<option value="${mm}" ${mm === per.mesTxt ? 'selected' : ''}>${mm}</option>`).join('')}</select></div><div class="form-group"><label>Año período</label><input type="number" name="anio" value="${per.y}" required></div></div>
-          <div class="form-row"><div class="form-group"><label>Tipo</label><select name="tipo"><option value="Sin Factura">Sin factura</option><option value="Compartida">Compartida</option></select></div><div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div><div class="form-group"><label>CUIT (opcional)</label><input name="cuit" placeholder="Si corresponde"></div></div>
           <div class="form-row"><div class="form-group"><label>Fecha de registro/emisión</label><input type="date" name="fechaEmision" value="${y}-${String(m).padStart(2,'0')}-01"></div><div class="form-group"><label>Fecha real de cobro</label><input type="date" name="fechaPago" value="${todayInputValue()}"></div></div>
           <div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" required></div>
-          <div class="form-group"><label>Concepto</label><input name="concepto" placeholder="Ej: trabajo puntual / ingreso sin factura"></div>
+          <div class="form-group"><label>Concepto</label><input name="concepto" placeholder="Ej: adelanto de gastos / regulación / consulta técnica / ingreso sin factura"></div>
           <div class="form-group"><label>Notas</label><input name="notas"></div>
           <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Registrar</button></div>
         </form>
       </div>
     </div>`;
+  const catSelect = $('#catIngresoLibre');
+  const tipoSelect = $('#tipoIngresoLibre');
+  const clienteInput = document.querySelector('#ingHonorariosLibreForm input[name="cliente"]');
+  const cuitInput = document.querySelector('#ingHonorariosLibreForm input[name="cuit"]');
+  function refreshTipoOptions() { tipoSelect.innerHTML = tipoOptionsHonorarios(catSelect.value, catSelect.value === 'PERITAJE' ? 'Sin Factura' : 'Sin Factura'); }
+  catSelect.addEventListener('change', refreshTipoOptions);
+  clienteInput.addEventListener('change', () => {
+    const o = origenByName(clienteInput.value);
+    if (o) {
+      catSelect.value = o.CategoriaIngreso || catSelect.value;
+      cuitInput.value = o.CUIT || '';
+      refreshTipoOptions();
+    }
+  });
   $('#ingHonorariosLibreForm').addEventListener('submit', async ev => {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
-    const cinfo = CLIENTES_CARPETAS[fd.cliente] || {};
+    const oinfo = clienteInfoHonorarios(fd.cliente);
+    const categoria = fd.categoriaIngreso || oinfo.categoriaIngreso || inferCategoriaIngreso(fd.cliente);
+    if (categoria === 'PERITAJE' && fd.tipo === 'Compartida') {
+      showError('En PERITAJE no corresponde usar ingreso compartido. Elegí Facturado o No facturado.');
+      return;
+    }
     try {
+      await ensureOrigenIngresoRegistered({categoria, nombre: fd.cliente, cuit: fd.cuit || oinfo.cuit || '', recurrente:'NO', auditarPDF:'NO', carpetaPDF:'', prefijoPDF:sanitizePrefijo(fd.cliente, categoria)});
       await appendHonorariosRow({
-        cliente: fd.cliente, cuit: cinfo.cuit || '', mes: fd.mes, anio: Number(fd.anio),
+        cliente: fd.cliente, cuit: fd.cuit || oinfo.cuit || '', mes: fd.mes, anio: Number(fd.anio),
         fechaEmision: fd.fechaEmision ? inputDateToDDMMYYYY(fd.fechaEmision) : '', nroFactura: '',
         concepto: fd.concepto || `Ingreso ${fd.mes} ${fd.anio}`, monto: Number(fd.monto),
         estado: fd.estado || 'Pagada', fechaPago: fd.estado === 'Pagada' ? inputDateToDDMMYYYY(fd.fechaPago || todayInputValue()) : '',
-        notas: fd.notas || '', pdf: '', tipo: fd.tipo || 'Sin Factura',
+        notas: fd.notas || '', pdf: '', tipo: fd.tipo || 'Sin Factura', categoriaIngreso: categoria,
       });
       closeModal(); setStatus('✓ Ingreso manual registrado', 'ok');
     } catch (e) { showError('No se pudo registrar ingreso manual: ' + e.message); setStatus('Error','err'); }
@@ -973,7 +1110,7 @@ async function auditarPDFsHonorarios() {
   try {
     const pdfsRegistrados = new Set(facturas.map(f => f.pdf).filter(Boolean));
     const result = { scannedAt: new Date().toLocaleString('es-AR'), summary: { ok:0, malNombrados:0, sinRegistrar:0, sinCarpeta:0 }, porCliente: {} };
-    for (const [cliente, info] of Object.entries(CLIENTES_CARPETAS)) {
+    for (const [cliente, info] of Object.entries(clientesCarpetasHonorarios())) {
       const items = await listFolderChildrenHonorarios(info.folder);
       if (items === null) {
         result.porCliente[cliente] = { error: 'Carpeta no encontrada', folder: info.folder, prefijo: info.prefijo, pdfs: [] };
@@ -1014,7 +1151,7 @@ async function registrarPDFHonorarios(cliente, itemId) {
   const data = auditHonorariosData?.porCliente?.[cliente];
   const pdf = data?.pdfs?.find(p => p.id === itemId);
   if (!pdf || !pdf.parsed) return;
-  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  const cinfo = clienteInfoHonorarios(cliente);
   try {
     await appendHonorariosRow({
       cliente,
@@ -1030,6 +1167,7 @@ async function registrarPDFHonorarios(cliente, itemId) {
       notas: 'Auto-cargado desde PDF — completar monto y N° factura',
       pdf: pdf.name,
       tipo: 'Propia',
+      categoriaIngreso: cinfo.categoriaIngreso || inferCategoriaIngreso(cliente),
     });
     auditHonorariosData = null;
     await auditarPDFsHonorarios();
@@ -1538,9 +1676,9 @@ function renderIngresosTab() {
   })();
 
   const tipoBadge = (tipo) => {
-    const t = tipo || 'Propia';
-    const cls = t === 'Compartida' ? 'badge-warn' : (t === 'Sin Factura' ? 'badge-mauve' : (t === 'Desestimada' ? 'badge-anulada' : 'badge-info'));
-    return `<span class="badge ${cls}">${escapeHtml(t)}</span>`;
+    const label = tipoLabelHonorarios(tipo);
+    const cls = label === 'Compartido' ? 'badge-warn' : (label === 'No facturado' ? 'badge-mauve' : (label === 'Desestimado' ? 'badge-anulada' : 'badge-info'));
+    return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
   };
   const estadoBadge = (estado) => {
     if (estado === 'Pagada') return '<span class="badge badge-pagada">Pagada</span>';
@@ -1604,9 +1742,10 @@ function renderIngresosTab() {
     <div class="grid-2" style="margin-bottom:18px">
       <div class="card"><div class="card-title">Facturas / ingresos emitidos o registrados en ${MES_NAMES[m-1]} ${y}</div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>N°</th><th class="num">Monto</th><th>Acción</th></tr></thead>
+          <thead><tr><th>Categoría</th><th>Cliente / caso</th><th>Tipo</th><th>Estado</th><th>N°</th><th class="num">Monto</th><th>Acción</th></tr></thead>
           <tbody>
             ${ingresosPeriodo.length ? ingresosPeriodo.map(f => `<tr>
+              <td><span class="badge badge-info">${escapeHtml(f.categoriaIngreso || inferCategoriaIngreso(f.cliente, f.notas, f.concepto))}</span></td>
               <td><strong>${escapeHtml(f.cliente)}</strong><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(f.concepto || '')}<br><span style="font-size:10px">Período: ${f.mesTxt} ${f.anioServicio}${f.fechaEmision ? ` · Emisión: ${f.fechaEmision.toLocaleDateString('es-AR')}` : ''}</span></div></td>
               <td>${tipoBadge(f.tipo)}</td>
               <td>${estadoBadge(f.estado)}</td>
@@ -1616,7 +1755,7 @@ function renderIngresosTab() {
                 ${f.estado === 'Pendiente' && f.tipo !== 'Desestimada' ? `<button class="btn btn-success btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pagada')">✓ Marcar pagada</button>` : ''}
                 ${f.estado === 'Pagada' ? `<button class="btn btn-danger btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pendiente')">↩ Revertir</button>` : ''}
               </td>
-            </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">Sin registros para este período.</td></tr>'}
+            </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:18px">Sin registros para este período.</td></tr>'}
           </tbody>
         </table></div>
       </div>
@@ -1644,8 +1783,8 @@ function renderIngresosTab() {
     </div>
 
     <div class="card" style="margin-bottom:18px"><div class="card-title">Pendientes de cobro acumulados</div>
-      <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>Tipo</th><th>Concepto</th><th class="num">Monto</th><th>Acción</th></tr></thead><tbody>
-        ${porCobrar.length ? porCobrar.map(f => `<tr><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${tipoBadge(f.tipo)}</td><td>${escapeHtml(f.concepto||'')}</td><td class="num">${fmtARS(f.monto)}</td><td><button class="btn btn-success btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pagada')">✓ Marcar pagada</button></td></tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">Sin pendientes 🎉</td></tr>'}
+      <div class="table-wrap"><table><thead><tr><th>Categoría</th><th>Cliente / caso</th><th>Período</th><th>Tipo</th><th>Concepto</th><th class="num">Monto</th><th>Acción</th></tr></thead><tbody>
+        ${porCobrar.length ? porCobrar.map(f => `<tr><td><span class="badge badge-info">${escapeHtml(f.categoriaIngreso || inferCategoriaIngreso(f.cliente, f.notas, f.concepto))}</span></td><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${tipoBadge(f.tipo)}</td><td>${escapeHtml(f.concepto||'')}</td><td class="num">${fmtARS(f.monto)}</td><td><button class="btn btn-success btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pagada')">✓ Marcar pagada</button></td></tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:18px">Sin pendientes 🎉</td></tr>'}
       </tbody></table></div>
     </div>
 
