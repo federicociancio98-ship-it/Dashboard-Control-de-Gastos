@@ -276,6 +276,7 @@
   <!-- TABS -->
   <div class="tabs" id="tabs">
     <button class="tab active" data-tab="resumen">Resumen</button>
+    <button class="tab" data-tab="ingresos">Ingresos</button>
     <button class="tab" data-tab="pagos">Pagos del mes</button>
     <button class="tab" data-tab="tarjetas">Tarjetas</button>
     <button class="tab" data-tab="flujo">Flujo de caja</button>
@@ -907,6 +908,12 @@ function renderAll() {
   renderTabContent();
 }
 
+function isPagoTarjeta(r) {
+  return fixedKey(r.Categoría) === fixedKey('Pago tarjeta de crédito') || String(r.Descripción || '').toLowerCase().startsWith('pago resumen ');
+}
+function gastosDirectosSinPagoTarjeta(arr) {
+  return (arr || []).filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r));
+}
 function renderKpis() {
   const { y, m, tx, cuotas } = selMonth();
   const { devengado, cobrado, porCobrar } = honorariosForMonth(y, m);
@@ -914,7 +921,8 @@ function renderKpis() {
   const totalCobr = sum(cobrado, 'monto');
   const totalPorCobr = sum(porCobrar, 'monto');
   const otrosIng = sum(tx.filter(r => r.Tipo === 'Ingreso'), 'Importe');
-  const gastos = sum(tx.filter(r => r.Tipo === 'Gasto'), 'Importe');
+  const gastosBase = gastosDirectosSinPagoTarjeta(tx);
+  const gastos = sum(gastosBase, 'Importe');
   const cuotasMes = sum(cuotas, 'MontoCuota');
   const ingresosTotMes = totalCobr + otrosIng;  // dinero real entrado
   const saldo = ingresosTotMes - gastos - cuotasMes;
@@ -924,7 +932,7 @@ function renderKpis() {
     { label: 'Cobrado en el mes',     value: fmtARS(totalCobr),    cls: 'sage',  vcls: 'sage',  hint: `${cobrado.length} factura(s) cobradas` },
     { label: 'Devengado del mes',     value: fmtARS(totalDeveng),  cls: 'slate', vcls: 'slate', hint: `${devengado.length} factura(s) por servicios` },
     { label: 'Por cobrar',            value: fmtARS(totalPorCobr), cls: 'warm',  vcls: 'warm',  hint: `${porCobrar.length} pendiente(s)` },
-    { label: 'Gastos directos',       value: fmtARS(gastos),       cls: 'warm',  vcls: '',      hint: `${tx.filter(r=>r.Tipo==='Gasto').length} mov.` },
+    { label: 'Gastos directos',       value: fmtARS(gastos),       cls: 'warm',  vcls: '',      hint: `${gastosBase.length} mov. sin pagos TC` },
     { label: 'Cuotas TC del mes',     value: fmtARS(cuotasMes),    cls: 'mauve', vcls: 'mauve', hint: `${cuotas.length} cuota(s)` },
     { label: 'Saldo del mes',         value: fmtARS(saldo),        cls: saldoCls, vcls: saldoCls, hint: 'Cobrado − gastos − cuotas' }
   ];
@@ -982,6 +990,7 @@ function renderTabContent() {
   Object.values(charts).forEach(c => { try { c.destroy(); } catch (_) {} });
   charts = {};
   if (currentTab === 'resumen')      root.innerHTML = renderResumenTab();
+  else if (currentTab === 'ingresos') root.innerHTML = renderIngresosTab();
   else if (currentTab === 'pagos')   root.innerHTML = renderPagosTab();
   else if (currentTab === 'tarjetas')root.innerHTML = renderTarjetasTab();
   else if (currentTab === 'flujo')   root.innerHTML = renderFlujoTab();
@@ -1031,7 +1040,7 @@ function drawResumenCharts() {
   const sorted = [...keys].filter(k => !k.includes('undefined')).sort().slice(-12);
   const cobrSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto'); });
   const otrosSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe'); });
-  const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && r.Año === yy && r.Mes === mm), 'Importe'); });
+  const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r) && r.Año === yy && r.Mes === mm), 'Importe'); });
   const cuotaSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.cuotas.filter(r => r.Año === yy && r.Mes === mm), 'MontoCuota'); });
 
   charts.cf = new Chart(document.getElementById('cashflowChart'), {
@@ -1054,7 +1063,7 @@ function drawResumenCharts() {
     }
   });
   // Donut composición
-  const gs = groupSum(tx.filter(r => r.Tipo === 'Gasto'), 'Categoría', 'Importe').slice(0, 8);
+  const gs = groupSum(gastosCategorizadosDelMes(), 'Categoría', 'Importe').slice(0, 8);
   charts.donut = new Chart(document.getElementById('summaryDonut'), {
     type: 'doughnut',
     data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] },
@@ -1081,6 +1090,58 @@ function drawResumenCharts() {
         <div class="pending-amount">${fmtARS(f.monto)}</div>
       </div>`).join('')
     : '<p style="font-size:13px;color:var(--text-muted);padding:18px 0">Sin pendientes 🎉</p>';
+}
+
+// ── TAB: INGRESOS ────────────────────────────────────────────────────────
+function renderIngresosTab() {
+  const { y, m, tx } = selMonth();
+  const { devengado, cobrado, porCobrar } = honorariosForMonth(y, m);
+  const otros = tx.filter(r => r.Tipo === 'Ingreso');
+  const totalCobrado = sum(cobrado, 'monto');
+  const totalDevengado = sum(devengado, 'monto');
+  const totalOtros = sum(otros, 'Importe');
+  const totalPendiente = sum(porCobrar, 'monto');
+  const ingresosHistoricos = (() => {
+    const keys = new Set();
+    facturas.forEach(f => { if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); if (f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); });
+    rows.transacciones.filter(r => r.Tipo === 'Ingreso').forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
+    return [...keys].sort().slice(-12).reverse().map(k => {
+      const [yy, mm] = k.split('-').map(Number);
+      const honCob = sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto');
+      const honDev = sum(facturas.filter(f => f.anioServicio === yy && f.mesServicio === mm && f.tipo !== 'Desestimada'), 'monto');
+      const manual = sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe');
+      return { k, honCob, honDev, manual, total: honCob + manual };
+    });
+  })();
+  return `
+    <div class="grid-3" style="margin-bottom:18px">
+      <div class="kpi sage"><div class="kpi-label">Honorarios cobrados</div><div class="kpi-value sage">${fmtARS(totalCobrado)}</div><div class="kpi-sub">${cobrado.length} factura(s) con fecha de pago en ${MES_NAMES[m-1]} ${y}</div></div>
+      <div class="kpi slate"><div class="kpi-label">Honorarios devengados</div><div class="kpi-value slate">${fmtARS(totalDevengado)}</div><div class="kpi-sub">${devengado.length} factura(s) del período</div></div>
+      <div class="kpi warm"><div class="kpi-label">Pendiente acumulado</div><div class="kpi-value warm">${fmtARS(totalPendiente)}</div><div class="kpi-sub">${porCobrar.length} registro(s) pendiente(s)</div></div>
+    </div>
+    <div class="grid-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-title">Facturas cobradas en el mes</div>
+        <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>N°</th><th class="num">Monto</th><th>Fecha pago</th></tr></thead><tbody>
+          ${cobrado.length ? cobrado.map(f => `<tr><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${escapeHtml(f.nroFactura||'')}</td><td class="num">${fmtARS(f.monto)}</td><td>${f.fechaPago ? f.fechaPago.toLocaleDateString('es-AR') : ''}</td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:18px">Sin facturas cobradas este mes.</td></tr>'}
+        </tbody></table></div>
+      </div>
+      <div class="card"><div class="card-title">Otros ingresos cargados manualmente — ${MES_NAMES[m-1]} ${y}</div>
+        <div style="font-family:'DM Serif Display';font-size:24px;margin-bottom:12px;color:var(--sage)">${fmtARS(totalOtros)}</div>
+        <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th class="num">Importe</th></tr></thead><tbody>
+          ${otros.length ? otros.map(r => `<tr><td>${dateText(r.Fecha)}</td><td>${escapeHtml(r.Categoría||'')}</td><td>${escapeHtml(r.Descripción||'')}</td><td class="num">${fmtARS(r.Importe)}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px">Sin ingresos manuales este mes.</td></tr>'}
+        </tbody></table></div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-title">Pendientes de cobro</div>
+      <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>Concepto</th><th class="num">Monto</th></tr></thead><tbody>
+        ${porCobrar.length ? porCobrar.map(f => `<tr><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${escapeHtml(f.concepto||'')}</td><td class="num">${fmtARS(f.monto)}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px">Sin pendientes 🎉</td></tr>'}
+      </tbody></table></div>
+    </div>
+    <div class="card"><div class="card-title">Histórico mensual de ingresos</div>
+      <div class="table-wrap"><table><thead><tr><th>Mes</th><th class="num">Honorarios cobrados</th><th class="num">Otros ingresos</th><th class="num">Total cobrado</th><th class="num">Devengado</th></tr></thead><tbody>
+        ${ingresosHistoricos.map(r => `<tr><td><strong>${labelMonthKey(r.k)}</strong></td><td class="num">${fmtARS(r.honCob)}</td><td class="num">${fmtARS(r.manual)}</td><td class="num" style="font-weight:600;color:var(--sage)">${fmtARS(r.total)}</td><td class="num">${fmtARS(r.honDev)}</td></tr>`).join('')}
+      </tbody></table></div>
+    </div>`;
 }
 
 // ── TAB: PAGOS DEL MES ───────────────────────────────────────────────────
@@ -1395,7 +1456,7 @@ function drawFlujoCharts() {
   const cobrSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto'); });
   const devSerie  = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.anioServicio === yy && f.mesServicio === mm && f.tipo !== 'Desestimada'), 'monto'); });
   const otrosSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe'); });
-  const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && r.Año === yy && r.Mes === mm), 'Importe'); });
+  const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r) && r.Año === yy && r.Mes === mm), 'Importe'); });
   const cuotaSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.cuotas.filter(r => r.Año === yy && r.Mes === mm), 'MontoCuota'); });
   const saldoSerie = sorted.map((_, i) => (cobrSerie[i] + otrosSerie[i]) - gastoSerie[i] - cuotaSerie[i]);
 
@@ -1435,9 +1496,9 @@ function drawFlujoCharts() {
 
 // ── DATA: gastos categorizados del mes ────────────────────────────────────
 function gastosCategorizadosDelMes() {
-  const { y, m, tx, cuotas } = selMonth();
+  const { tx, cuotas } = selMonth();
   const gastosDirectos = (tx || [])
-    .filter(r => r.Tipo === 'Gasto')
+    .filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r))
     .map(r => ({
       Origen: 'Movimiento',
       Categoría: r.Categoría || 'Otros',
@@ -1446,16 +1507,16 @@ function gastosCategorizadosDelMes() {
       Importe: Number(r.Importe || 0)
     }));
 
-  // Las compras con tarjeta se pagan vía cuotas mensuales. Para que el panel "Por categoría"
-  // no quede vacío, tomamos cada cuota del mes y buscamos su compra madre en tbl_Tarjetas,
-  // de donde salen la categoría y subcategoría reales del consumo.
+  // Las cuotas de tarjeta se imputan a la categoría/subcategoría del consumo original.
+  // El pago del resumen de tarjeta NO se incluye acá para evitar duplicar: sirve como flujo de caja,
+  // pero el análisis de gasto debe mostrar en qué se consumió realmente.
   const comprasById = new Map((rows.tarjetas || []).map(t => [String(t.IDCompra || ''), t]));
   const cuotasTarjeta = (cuotas || []).map(c => {
     const compra = comprasById.get(String(c.IDCompra || '')) || {};
     return {
       Origen: 'Tarjeta',
-      Categoría: compra.Categoría || 'Pago tarjeta de crédito',
-      Subcategoría: compra.Subcategoría || 'Cuotas de tarjeta',
+      Categoría: compra.Categoría || 'Otros',
+      Subcategoría: compra.Subcategoría || 'Sin subcategoría',
       Descripción: c.Descripción || compra.Descripción || '',
       Importe: Number(c.MontoCuota || 0),
       Tarjeta: c.Tarjeta || compra.Tarjeta || ''
@@ -1464,6 +1525,7 @@ function gastosCategorizadosDelMes() {
 
   return gastosDirectos.concat(cuotasTarjeta);
 }
+
 
 function renderEmptyChartMessage(id, msg) {
   const el = document.getElementById(id);
@@ -1577,7 +1639,7 @@ function renderOtrosTab() {
         <div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Tipo</th><th class="num">Cantidad</th><th class="num">PPC</th><th class="num">Precio</th><th class="num">Tenencia</th><th>Acción</th></tr></thead><tbody>${invActivas.map(r => `<tr><td><strong>${escapeHtml(r.Ticker)}</strong></td><td>${escapeHtml(r.TipoActivo || '')}</td><td class="num">${fmtNum(r.Cantidad)}</td><td class="num">${fmtMoney(r.PPC, r.Moneda)}</td><td class="num">${fmtMoney(r.PrecioActual, r.Moneda)}</td><td class="num">${fmtARS(r.TenenciaARS)}</td><td><button class="btn btn-outline btn-sm" onclick="openInversionModal(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteInversion(${r.__rowIndex})">Eliminar</button></td></tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:18px">Sin inversiones registradas.</td></tr>'}</tbody></table></div>
       </div>
       <div class="card"><div class="section-header"><div class="card-title" style="margin-bottom:0">Metas de ahorro</div><button class="btn btn-outline btn-sm" onclick="openMetaModal()">+ Agregar meta</button></div>
-        ${rows.ahorro.length ? rows.ahorro.filter(r=>String(r.Activa||'SI').toUpperCase()==='SI').map(r => { const actual=Number(r.MontoActual||r.MontoAporte||0); const pct = r.MontoObjetivo ? Math.min(100, (actual / r.MontoObjetivo) * 100) : 0; const cls = pct>=100 ? 'badge-pagada' : (r.Estado === 'Vencida' ? 'badge-pendiente' : 'badge-warn'); return `<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-weight:600">${escapeHtml(r.Meta)}</span><span class="badge ${cls}">${pct>=100?'Cumplida':escapeHtml(r.Estado || 'En curso')}</span></div><div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div><div style="font-size:11px;color:var(--text-muted)">${fmtNum(pct)}% · ${fmtMoney(actual, r.Moneda)} de ${fmtMoney(r.MontoObjetivo, r.Moneda)} · vto: ${dateText(r.FechaObjetivo)}</div><div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="openMetaModal(${r.__rowIndex})">Editar</button> <button class="btn btn-success btn-sm" onclick="openAporteMetaModal(${r.__rowIndex})">Cargar aporte</button></div></div>`; }).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin metas registradas.</p>'}
+        ${rows.ahorro.length ? rows.ahorro.filter(r=>String(r.Activa||'SI').toUpperCase()==='SI').map(r => { const actual=Number(r.MontoActual||r.MontoAporte||0); const pct = r.MontoObjetivo ? Math.min(100, (actual / r.MontoObjetivo) * 100) : 0; const cls = pct>=100 ? 'badge-pagada' : (r.Estado === 'Vencida' ? 'badge-pendiente' : 'badge-warn'); return `<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-weight:600">${escapeHtml(r.Meta)}</span><span class="badge ${cls}">${pct>=100?'Cumplida':escapeHtml(r.Estado || 'En curso')}</span></div><div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div><div style="font-size:11px;color:var(--text-muted)">${fmtNum(pct)}% · ${fmtMoney(actual, r.Moneda)} de ${fmtMoney(r.MontoObjetivo, r.Moneda)} · vto: ${dateText(r.FechaObjetivo)}</div><div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="openMetaModal(${r.__rowIndex})">Editar</button> <button class="btn btn-success btn-sm" onclick="openAporteMetaModal(${r.__rowIndex})">Cargar aporte</button> <button class="btn btn-danger btn-sm" onclick="deleteMeta(${r.__rowIndex})">Eliminar meta</button></div></div>`; }).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin metas registradas.</p>'}
       </div>
     </div>`;
 }
@@ -1603,6 +1665,22 @@ function openMetaModal(rowIndex=null) {
   $('#modalRoot').innerHTML = `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar meta':'Agregar meta de ahorro'}</h2><form id="metaForm"><div class="form-group"><label>Meta</label><input name="meta" value="${escapeHtml(r?.Meta||'')}" required></div><div class="form-row"><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div><div class="form-group"><label>Monto objetivo</label><input type="number" step="0.01" name="objetivo" value="${r?.MontoObjetivo||''}" required></div></div><div class="form-row"><div class="form-group"><label>Fecha objetivo</label><input type="date" name="fecha" value="${r?.FechaObjetivo?new Date(excelDateToDate(r.FechaObjetivo)).toISOString().slice(0,10):todayInputValue()}"></div><div class="form-group"><label>Monto actual</label><input type="number" step="0.01" name="actual" value="${r?.MontoActual||r?.MontoAporte||0}"></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
   $('#metaForm').addEventListener('submit', async ev => { ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); setStatus('Guardando meta…','wait'); try { if (r) { const er=excelRowFromIndex('ahorro', rowIndex); await patchCells(SHEETS.ahorro, [['B'+er,fd.meta],['C'+er,fd.moneda],['D'+er,Number(fd.objetivo)],['E'+er,fd.fecha?dateToExcelSerial(fd.fecha):''],['G'+er,Number(fd.actual||0)],['H'+er,Number(fd.actual||0)>=Number(fd.objetivo||0)?'Cumplida':'En curso'],['I'+er,fd.notas||''],['J'+er,Number(fd.actual||0)],['K'+er,'SI']]); } else { await addRow(TABLES.ahorro, [nextId(rows.ahorro),fd.meta,fd.moneda,Number(fd.objetivo),fd.fecha?dateToExcelSerial(fd.fecha):'', '', Number(fd.actual||0), Number(fd.actual||0)>=Number(fd.objetivo||0)?'Cumplida':'En curso', fd.notas||'', Number(fd.actual||0),'SI']); } closeModal(); await loadAll(); } catch(e){showError('No se pudo guardar la meta: '+e.message); setStatus('Error','err');} });
 }
+async function deleteMeta(rowIndex) {
+  const r = rows.ahorro.find(x => Number(x.__rowIndex) === Number(rowIndex));
+  if (!r) return;
+  if (!confirm(`¿Eliminar la meta "${r.Meta}"? Los aportes ya cargados NO se borran; solo se oculta la meta.`)) return;
+  const er = excelRowFromIndex('ahorro', rowIndex);
+  setStatus('Eliminando meta…','wait');
+  try {
+    await patchCell(SHEETS.ahorro, 'K' + er, 'NO');
+    r.Activa = 'NO';
+    closeModal();
+    renderAll();
+    setStatus('✓ Meta eliminada', 'ok');
+  } catch(e) { showError('No se pudo eliminar la meta: ' + e.message); setStatus('Error','err'); }
+}
+window.deleteMeta = deleteMeta;
+
 function openAporteMetaModal(rowIndex) {
   const r=rows.ahorro.find(x=>x.__rowIndex===rowIndex); if(!r) return;
   $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>Cargar aporte — ${escapeHtml(r.Meta)}</h2><form id="aporteForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${todayInputValue()}"></div><div class="form-group"><label>Monto (${escapeHtml(r.Moneda||'ARS')})</label><input type="number" step="0.01" name="monto" required></div></div><div class="form-group"><label>Notas</label><input name="notas"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar aporte</button></div></form></div></div>`;
@@ -1666,6 +1744,31 @@ function openResumenRealModal(tarjeta) {
     } catch (err) { showError('No se pudo guardar el resumen real: ' + err.message); setStatus('Error', 'err'); }
   });
 }
+
+function subcatOptions(cat, selected = '') {
+  const arr = SUBCATEGORIAS[cat] || [''];
+  return arr.map(x => `<option value="${escapeHtml(x)}" ${x === selected ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
+}
+function ahorroGoalsOptions(selected = '') {
+  return (rows.ahorro || [])
+    .filter(r => String(r.Activa || 'SI').toUpperCase() === 'SI')
+    .map(r => `<option value="${r.__rowIndex}" ${String(r.__rowIndex) === String(selected) ? 'selected' : ''}>${escapeHtml(r.Meta)} (${escapeHtml(r.Moneda || 'ARS')})</option>`)
+    .join('');
+}
+window.updateSubcatSelect = function(sel) {
+  const form = sel.closest('form');
+  if (!form) return;
+  const sub = form.querySelector('[name="subcategoria"]');
+  const cat = sel.value || '';
+  if (sub) {
+    if (SUBCATEGORIAS[cat]) sub.innerHTML = subcatOptions(cat);
+    else sub.innerHTML = '<option></option>';
+  }
+  const cardBox = form.querySelector('#txCardSelector');
+  const ahorroBox = form.querySelector('#txAhorroSelector');
+  if (cardBox) cardBox.style.display = cat === 'Pago tarjeta de crédito' ? 'block' : 'none';
+  if (ahorroBox) ahorroBox.style.display = cat === 'Ahorro / Inversiones' ? 'block' : 'none';
+};
 
 // ── MODAL: Cargar movimiento (paso 1: medio) ──
 function openTxModal() {
