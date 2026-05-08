@@ -672,7 +672,12 @@ function normalizeRows() {
     if (!r.Mes || !r.Año) { const d = excelDateToDate(r.Fecha); if (d) { r.Mes = d.getMonth() + 1; r.Año = d.getFullYear(); } }
   });
   rows.tarjetas.forEach(r => ['ImporteTotal','Reintegro','ImporteNeto','Cuotas','ValorCuota','CuotasRestantes'].forEach(f => r[f] = Number(r[f] || 0)));
-  rows.cuotas.forEach(r => { r.MontoCuota = Number(r.MontoCuota || 0); r.Mes = Number(r.Mes || 0); r.Año = Number(r.Año || 0); });
+  rows.cuotas.forEach(r => {
+    r.MontoCuota = Number(r.MontoCuota || 0); r.Mes = Number(r.Mes || 0); r.Año = Number(r.Año || 0);
+    // Algunas filas históricas no tienen Mes/Año cargados, pero sí MesPago como fecha serial de Excel.
+    // Si no reconstruimos Mes/Año desde MesPago, el dashboard no puede imputar esas cuotas al mes seleccionado.
+    if (!r.Mes || !r.Año) { const d = excelDateToDate(r.MesPago); if (d) { r.Mes = d.getMonth() + 1; r.Año = d.getFullYear(); } }
+  });
   rows.deudas.forEach(r => r.Monto = Number(r.Monto || 0));
   rows.inversiones.forEach(r => ['Cantidad','PPC','PrecioActual','GananciaARS','TenenciaARS'].forEach(f => r[f] = Number(r[f] || 0)));
   rows.ahorro.forEach(r => { r.MontoObjetivo = Number(r.MontoObjetivo || 0); r.MontoAporte = Number(r.MontoAporte || 0); r.MontoActual = Number(r.MontoActual || r.MontoAporte || 0); });
@@ -1428,6 +1433,44 @@ function drawFlujoCharts() {
     </table>`;
 }
 
+// ── DATA: gastos categorizados del mes ────────────────────────────────────
+function gastosCategorizadosDelMes() {
+  const { y, m, tx, cuotas } = selMonth();
+  const gastosDirectos = (tx || [])
+    .filter(r => r.Tipo === 'Gasto')
+    .map(r => ({
+      Origen: 'Movimiento',
+      Categoría: r.Categoría || 'Otros',
+      Subcategoría: r.Subcategoría || 'Sin subcategoría',
+      Descripción: r.Descripción || '',
+      Importe: Number(r.Importe || 0)
+    }));
+
+  // Las compras con tarjeta se pagan vía cuotas mensuales. Para que el panel "Por categoría"
+  // no quede vacío, tomamos cada cuota del mes y buscamos su compra madre en tbl_Tarjetas,
+  // de donde salen la categoría y subcategoría reales del consumo.
+  const comprasById = new Map((rows.tarjetas || []).map(t => [String(t.IDCompra || ''), t]));
+  const cuotasTarjeta = (cuotas || []).map(c => {
+    const compra = comprasById.get(String(c.IDCompra || '')) || {};
+    return {
+      Origen: 'Tarjeta',
+      Categoría: compra.Categoría || 'Pago tarjeta de crédito',
+      Subcategoría: compra.Subcategoría || 'Cuotas de tarjeta',
+      Descripción: c.Descripción || compra.Descripción || '',
+      Importe: Number(c.MontoCuota || 0),
+      Tarjeta: c.Tarjeta || compra.Tarjeta || ''
+    };
+  }).filter(r => Number(r.Importe || 0) !== 0);
+
+  return gastosDirectos.concat(cuotasTarjeta);
+}
+
+function renderEmptyChartMessage(id, msg) {
+  const el = document.getElementById(id);
+  if (!el || !el.parentElement) return;
+  el.parentElement.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;text-align:center;padding:20px">${escapeHtml(msg)}</div>`;
+}
+
 // ── TAB: POR CATEGORÍA ───────────────────────────────────────────────────
 function renderCategoriasTab() {
   return `
@@ -1447,22 +1490,36 @@ function renderCategoriasTab() {
     </div>`;
 }
 function drawCategoriasCharts() {
-  const { tx } = selMonth();
-  const gastos = tx.filter(r => r.Tipo === 'Gasto');
+  const gastos = gastosCategorizadosDelMes();
   const total = sum(gastos, 'Importe');
   const gs = groupSum(gastos, 'Categoría', 'Importe');
-  const sub = groupSum(gastos, 'Subcategoría', 'Importe');
-  charts.catDonut = new Chart(document.getElementById('catDonut'), {
-    type: 'doughnut',
-    data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
-  });
-  charts.catBars = new Chart(document.getElementById('catBars'), {
-    type: 'bar', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: gs.map((_, i) => COLORS_PALETTE[i % COLORS_PALETTE.length]), borderRadius: 4 }] },
-    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } }, y: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } } } }
-  });
+  // Detalle por categoría/subcategoría para evitar mezclar, por ejemplo, "General" de categorías distintas.
+  const sub = (() => {
+    const m = {};
+    gastos.forEach(r => {
+      const k = `${r.Categoría || 'Otros'} · ${r.Subcategoría || 'Sin subcategoría'}`;
+      m[k] = (m[k] || 0) + Number(r.Importe || 0);
+    });
+    return Object.entries(m).map(([key, value]) => ({ key, value })).sort((a,b)=>b.value-a.value);
+  })();
+
+  if (!gs.length || !total) {
+    renderEmptyChartMessage('catDonut', 'Sin gastos imputados para el mes seleccionado.');
+    renderEmptyChartMessage('catBars', 'Sin gastos imputados para el mes seleccionado.');
+  } else {
+    charts.catDonut = new Chart(document.getElementById('catDonut'), {
+      type: 'doughnut',
+      data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
+    });
+    charts.catBars = new Chart(document.getElementById('catBars'), {
+      type: 'bar', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: gs.map((_, i) => COLORS_PALETTE[i % COLORS_PALETTE.length]), borderRadius: 4 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } }, y: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } } } }
+    });
+  }
+
   $('#catTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Categoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${gs.map(x => `<tr><td><strong>${escapeHtml(x.key)}</strong></td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin gastos.</td></tr>'}</tbody></table></div>`;
-  $('#subcatTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Subcategoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${sub.map(x => `<tr><td>${escapeHtml(x.key || 'Sin subcategoría')}</td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin subcategorías.</td></tr>'}</tbody></table></div>`;
+  $('#subcatTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Categoría / Subcategoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${sub.map(x => `<tr><td>${escapeHtml(x.key)}</td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin subcategorías.</td></tr>'}</tbody></table></div>`;
 }
 
 // ── TAB: MOVIMIENTOS ─────────────────────────────────────────────────────
