@@ -276,7 +276,7 @@
   <!-- TABS -->
   <div class="tabs" id="tabs">
     <button class="tab active" data-tab="resumen">Resumen</button>
-    <button class="tab" data-tab="ingresos">Ingresos</button>
+    <button class="tab" data-tab="ingresos">Ingresos / Facturación</button>
     <button class="tab" data-tab="pagos">Pagos del mes</button>
     <button class="tab" data-tab="tarjetas">Tarjetas</button>
     <button class="tab" data-tab="flujo">Flujo de caja</button>
@@ -320,13 +320,12 @@ const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','
 const MES_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const SUBCATEGORIAS = {
   'Alquiler / Expensas': ['Alquiler dueño','Alquiler inmobiliaria','Expensas','Depósito / garantía','Otros vivienda fija'],
-  'Servicios / Suscripciones': ['Agua','Luz','Gas','Internet','Streaming / apps','Software / nube','Telefonía','Otros servicios'],
-  'Supermercado / Almacén': ['Supermercado','Almacén','Kiosco','Bebidas','Congelados / almacén','Otros despensa'],
-  'Carnicería / Verdulería': ['Carnicería','Verdulería','Pollería','Pescadería','Asado / carne para juntada','Otros frescos'],
+  'Servicios básicos': ['Agua','Luz','Gas','Internet','Telefonía','Otros servicios básicos'],
+  'Suscripciones / Software / Apps': ['Streaming','Apps','Software profesional','Nube / almacenamiento','Membresías digitales','Otros servicios digitales'],
+  'Supermercado / Almacén / Frescos': ['Supermercado','Almacén','Kiosco','Carnicería','Verdulería','Pollería','Pescadería','Bebidas','Otros alimentos / despensa'],
   'Comidas afuera / Delivery / Viandas': ['Vianda','Delivery','Restaurante','Fast food','Café / desayuno','Helado / postre','Otros comida preparada'],
   'Salidas / Bares / Eventos': ['Bar','Boliche / fiesta','Entradas / recitales','Cumpleaños / evento','Salida con amigos','Otros ocio'],
-  'Auto / Mantenimiento': ['Cuota auto','Seguro','Patente','Service','Repuestos','Taller mecánico','Lavadero / estacionamiento','Otros auto'],
-  'Combustible': ['Nafta','Gasoil','GNC','Carga ruta','Otros combustible'],
+  'Auto / Mantenimiento': ['Cuota auto','Combustible','Seguro / patente / impuestos','Repuestos / taller mecánico','Lavadero','Estacionamiento / peajes','Otros auto'],
   'Hogar / Muebles / Mantenimiento': ['Muebles','Ferretería','Herramientas','Blancos / ropa de cama','Decoración','Jardín / pileta','Reparaciones','Otros hogar'],
   'Tecnología / Electrónica': ['Celular','Computación','Audio / accesorios','TV / electrodoméstico','Smartwatch / gadgets','Cables / cargadores','Otros tecnología'],
   'Ropa / Calzado': ['Ropa diaria','Calzado','Ropa deportiva','Ropa formal','Accesorios','Otros ropa'],
@@ -346,6 +345,45 @@ const SUBCATEGORIAS = {
 const CATEGORIAS_GASTO = Object.keys(SUBCATEGORIAS);
 const CATEGORIAS_INGRESO = ['Sueldo Zavalla','Sueldo MATTFRA','Sueldo ARNOLD','Sueldo MUÑOZ','Sueldo SERVICIOS','Otros'];
 const MEDIOS_PAGO_NO_TC = ['Efectivo','Débito','Transferencia','MercadoPago','Sin especificar'];
+
+// ── CONFIG HONORARIOS / FACTURACIÓN ─────────────────────────────────────
+const CLIENTES_RECURRENTES = ['Mattfra Constructora','Coronel Arnold','Pueblo Muñoz','Comuna de Zavalla','Comuna de Acebal'];
+
+const CLIENTES_CARPETAS = {
+  'Comuna de Acebal': {
+    folder: '0 - Trabajo/00_COMUNA DE ACEBAL/0000_Facturación PROPIA',
+    prefijo: 'ACEBAL',
+    cuit: '30-67747357-2'
+  },
+  'Coronel Arnold': {
+    folder: '0 - Trabajo/00_COMUNA DE CORONEL ARNOLD/0000_Facturación PROPIA',
+    prefijo: 'CA',
+    cuit: '30-67396955-7'
+  },
+  'Pueblo Muñoz': {
+    folder: '0 - Trabajo/00_COMUNA DE PUEBLO MUÑOZ/0000_Facturación PROPIA',
+    prefijo: 'PM',
+    cuit: '30-67747999-6'
+  },
+  'Comuna de Zavalla': {
+    folder: '0 - Trabajo/00_COMUNA DE ZAVALLA/0000_Facturación PROPIA',
+    prefijo: 'ZAVALLA',
+    cuit: '30-65412190-3'
+  },
+  'Mattfra Constructora': {
+    folder: '0 - Trabajo/04 - MATTFRA/0000_Facturación PROPIA',
+    prefijo: 'MATTFRA',
+    cuit: '30-71573759-7'
+  },
+  'Consorcio Pasaje Apóstoles 1229': {
+    folder: '0 - Trabajo/06_PERITAJE PODER JUDICIAL/01 - 20260409 _ Consorcio/0000_Facturación PROPIA',
+    prefijo: 'CONSORCIO',
+    cuit: '30-71717532-4'
+  }
+};
+
+const PDF_NAME_REGEX = /^(ACEBAL|CA|PM|ZAVALLA|MATTFRA|CONSORCIO)_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC) (\d{4})\.pdf$/i;
+
 // Paleta de colores Honorarios para charts
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
 const CARD_COLORS = { 'Santa Fe PAPA': '#6b8cae', 'Macro PAPA': '#c4a882', 'Macro FEDE': '#7aa68a', 'BBVA FEDE': '#9b86a8' };
@@ -359,6 +397,8 @@ let honorariosFid = null;
 const raw = {};   // {key: {headers, data, address}}
 const rows = {};  // {key: [...]}
 let facturas = [];
+let auditHonorariosData = null;
+let auditingHonorarios = false;
 let charts = {};
 let currentTab = 'resumen';
 let selectedMonth = null; // 'YYYY-MM'
@@ -626,14 +666,290 @@ function parseHonorarios(range) {
       mesTxt, anio,
       mesServicio: mesIdx + 1, anioServicio: anio,
       monto, estado, tipo,
+      fechaEmision: (() => {
+        const fe = row[5];
+        if (typeof fe === 'number') return excelDateToDate(fe);
+        const txt = String(t[5] || fe || '').trim();
+        const m = txt.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
+      })(),
       fechaPago,
       mesPago: fechaPago ? fechaPago.getMonth() + 1 : null,
       anioPago: fechaPago ? fechaPago.getFullYear() : null,
       concepto: String(row[7] || '').trim(),
       nroFactura: String(t[6] || row[6] || '').trim(),
+      notas: String(row[11] || '').trim(),
+      pdf: String(row[12] || '').trim(),
     };
   }).filter(Boolean);
 }
+
+
+function todayDDMMYYYY() {
+  const d = new Date();
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+}
+function mesKeyHonorarios(f) {
+  return (Number(f.anioServicio || f.anio) || 0) * 100 + (Number(f.mesServicio) || (MESES_HON.indexOf(f.mesTxt) + 1) || 0);
+}
+function selectedHonorariosPeriod() {
+  const { y, m } = selMonth();
+  return { y, m, mesTxt: MESES_HON[m - 1] };
+}
+function detectFaltantesHonorarios(y, m) {
+  const mesTxt = MESES_HON[m - 1];
+  const cubiertos = new Set(
+    facturas
+      .filter(f => f.mesServicio === m && f.anioServicio === y)
+      .map(f => f.cliente)
+  );
+  return CLIENTES_RECURRENTES
+    .filter(c => !cubiertos.has(c))
+    .map(c => ({ cliente: c, mes: mesTxt, anio: y }));
+}
+function nextHonorariosRowAndId() {
+  const maxId = facturas.reduce((m, f) => Math.max(m, Number(f.id || 0)), 0);
+  const maxRow = facturas.reduce((m, f) => Math.max(m, Number(f.rowExcel || 0)), 3);
+  return { id: maxId + 1, row: maxRow + 1 };
+}
+async function ensureHonorariosFileId() {
+  if (!honorariosFid) {
+    const item = await gFetch(`/me/drive/root:/${encodePath(CONFIG.honorariosPath)}:`);
+    honorariosFid = item.id;
+  }
+  return honorariosFid;
+}
+async function patchHonorariosCell(addr, val) {
+  const fid = await ensureHonorariosFileId();
+  const enc = encodeURIComponent(`${CONFIG.honorariosSheet}!${addr}`);
+  await gFetch(`/me/drive/items/${fid}/workbook/worksheets/${encodeURIComponent(CONFIG.honorariosSheet)}/range(address='${enc}')`, {
+    method:'PATCH',
+    body: JSON.stringify({ values:[[val]] })
+  });
+}
+async function patchHonorariosRow(rowExcel, valuesArr) {
+  const fid = await ensureHonorariosFileId();
+  const addr = `A${rowExcel}:N${rowExcel}`;
+  const enc = encodeURIComponent(`${CONFIG.honorariosSheet}!${addr}`);
+  await gFetch(`/me/drive/items/${fid}/workbook/worksheets/${encodeURIComponent(CONFIG.honorariosSheet)}/range(address='${enc}')`, {
+    method:'PATCH',
+    body: JSON.stringify({ values:[valuesArr] })
+  });
+}
+async function appendHonorariosRow(rowData) {
+  const { id, row } = nextHonorariosRowAndId();
+  const arr = [
+    id,
+    rowData.cliente || '',
+    rowData.cuit || '',
+    rowData.mes || '',
+    rowData.anio || '',
+    rowData.fechaEmision || '',
+    rowData.nroFactura || '',
+    rowData.concepto || '',
+    Number(rowData.monto) || 0,
+    rowData.estado || 'Pendiente',
+    rowData.fechaPago || '',
+    rowData.notas || '',
+    rowData.pdf || '',
+    rowData.tipo || 'Propia',
+  ];
+  await patchHonorariosRow(row, arr);
+  await loadAll();
+  return row;
+}
+async function listFolderChildrenHonorarios(folderPath) {
+  try {
+    const d = await gFetch(`/me/drive/root:/${encodePath(folderPath)}:/children?$top=200&$select=name,id,size,parentReference,webUrl,lastModifiedDateTime`);
+    return d?.value || [];
+  } catch (e) {
+    if (String(e.message).includes('404') || String(e.message).includes('itemNotFound')) return null;
+    throw e;
+  }
+}
+async function renameDriveItemHonorarios(itemId, newName) {
+  await gFetch(`/me/drive/items/${itemId}`, { method:'PATCH', body: JSON.stringify({ name: newName }) });
+}
+function parsePDFNameHonorarios(name) {
+  const m = String(name || '').match(PDF_NAME_REGEX);
+  if (!m) return null;
+  const [, prefijo, fecha, mes, anio] = m;
+  const yyyy = fecha.substring(0,4), mm = fecha.substring(4,6), dd = fecha.substring(6,8);
+  return {
+    prefijo: prefijo.toUpperCase(),
+    fechaEmision: `${dd}/${mm}/${yyyy}`,
+    mes: mes.toUpperCase(),
+    anio: Number(anio)
+  };
+}
+function sugerirNombreHonorarios(prefijo, mtimeIso, mes, anio) {
+  const d = mtimeIso ? new Date(mtimeIso) : new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return `${prefijo}_${yyyy}${mm}${dd}_${mes || 'XXX'} ${anio || yyyy}.pdf`;
+}
+async function marcarFacturaHonorarios(rowExcel, nuevoEstado) {
+  try {
+    await patchHonorariosCell(`J${rowExcel}`, nuevoEstado);
+    const fechaPagoNueva = nuevoEstado === 'Pagada' ? todayDDMMYYYY() : '';
+    await patchHonorariosCell(`K${rowExcel}`, fechaPagoNueva);
+    facturas = facturas.map(f => f.rowExcel === rowExcel ? {
+      ...f,
+      estado: nuevoEstado,
+      fechaPago: nuevoEstado === 'Pagada' ? new Date() : null,
+      mesPago: nuevoEstado === 'Pagada' ? new Date().getMonth() + 1 : null,
+      anioPago: nuevoEstado === 'Pagada' ? new Date().getFullYear() : null
+    } : f);
+    renderAll();
+    setStatus('✓ Facturación actualizada', 'ok');
+  } catch (e) { showError('No se pudo actualizar la factura: ' + e.message); setStatus('Error','err'); }
+}
+async function desestimarHonorarios(cliente, mes, anio) {
+  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  try {
+    await appendHonorariosRow({
+      cliente,
+      cuit: cinfo.cuit || '',
+      mes,
+      anio,
+      fechaEmision: '',
+      nroFactura: '',
+      concepto: 'Desestimada — corresponde a colega',
+      monto: 0,
+      estado: 'Anulada',
+      fechaPago: '',
+      notas: 'Sin emisión propia este período',
+      pdf: '',
+      tipo: 'Desestimada',
+    });
+    setStatus('✓ Período desestimado', 'ok');
+  } catch (e) { showError('No se pudo desestimar: ' + e.message); setStatus('Error','err'); }
+}
+function openIngresoHonorariosModal(cliente, mes, anio) {
+  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  $('#modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <h2>Registrar ingreso sin factura propia</h2>
+        <div class="modal-sub">${escapeHtml(cliente)} · ${escapeHtml(mes)} ${anio}. Útil cuando factura un colega pero vos percibís tu parte.</div>
+        <form id="ingHonorariosForm">
+          <div class="form-row">
+            <div class="form-group"><label>Tipo</label><select name="tipo"><option value="Compartida">Compartida</option><option value="Sin Factura">Sin factura</option></select></div>
+            <div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div>
+          </div>
+          <div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" required></div>
+          <div class="form-group"><label>Concepto</label><input name="concepto" value="Ingreso ${escapeHtml(mes)} ${anio}"></div>
+          <div class="form-group"><label>Notas</label><input name="notas" placeholder="Ej: factura emitida por colega"></div>
+          <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Registrar</button></div>
+        </form>
+      </div>
+    </div>`;
+  $('#ingHonorariosForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    try {
+      await appendHonorariosRow({
+        cliente,
+        cuit: cinfo.cuit || '',
+        mes,
+        anio,
+        fechaEmision: '',
+        nroFactura: '',
+        concepto: fd.concepto || `Ingreso ${mes} ${anio}`,
+        monto: Number(fd.monto),
+        estado: fd.estado || 'Pagada',
+        fechaPago: fd.estado === 'Pagada' ? todayDDMMYYYY() : '',
+        notas: fd.notas || '',
+        pdf: '',
+        tipo: fd.tipo || 'Compartida',
+      });
+      closeModal();
+      setStatus('✓ Ingreso registrado', 'ok');
+    } catch (e) { showError('No se pudo registrar ingreso: ' + e.message); setStatus('Error','err'); }
+  });
+}
+async function auditarPDFsHonorarios() {
+  auditingHonorarios = true; setStatus('Escaneando facturas…','wait'); renderAll();
+  try {
+    const pdfsRegistrados = new Set(facturas.map(f => f.pdf).filter(Boolean));
+    const result = { scannedAt: new Date().toLocaleString('es-AR'), summary: { ok:0, malNombrados:0, sinRegistrar:0, sinCarpeta:0 }, porCliente: {} };
+    for (const [cliente, info] of Object.entries(CLIENTES_CARPETAS)) {
+      const items = await listFolderChildrenHonorarios(info.folder);
+      if (items === null) {
+        result.porCliente[cliente] = { error: 'Carpeta no encontrada', folder: info.folder, prefijo: info.prefijo, pdfs: [] };
+        result.summary.sinCarpeta++;
+        continue;
+      }
+      const pdfs = items.filter(it => /\.pdf$/i.test(it.name));
+      const detalle = pdfs.map(pdf => {
+        const parsed = parsePDFNameHonorarios(pdf.name);
+        const enExcel = pdfsRegistrados.has(pdf.name);
+        let status = 'ok', hint = '', sugerencia = '';
+        if (!parsed) {
+          status = 'mal-nombrado';
+          sugerencia = sugerirNombreHonorarios(info.prefijo, pdf.lastModifiedDateTime, '', '');
+          hint = `No cumple formato. Sugerido: ${sugerencia}`;
+          result.summary.malNombrados++;
+        } else if (parsed.prefijo !== info.prefijo) {
+          status = 'mal-nombrado';
+          hint = `Prefijo "${parsed.prefijo}" no coincide con "${info.prefijo}" esperado`;
+          result.summary.malNombrados++;
+        } else if (!enExcel) {
+          status = 'sin-registrar';
+          hint = 'PDF no registrado en el Excel de honorarios';
+          result.summary.sinRegistrar++;
+        } else {
+          result.summary.ok++;
+        }
+        return { ...pdf, parsed, enExcel, status, hint, sugerencia };
+      });
+      result.porCliente[cliente] = { folder: info.folder, prefijo: info.prefijo, pdfs: detalle };
+    }
+    auditHonorariosData = result;
+    setStatus('✓ Auditoría de PDFs completada', 'ok');
+  } catch (e) { showError('No se pudo auditar PDFs: ' + e.message); setStatus('Error','err'); }
+  finally { auditingHonorarios = false; renderAll(); }
+}
+async function registrarPDFHonorarios(cliente, itemId) {
+  const data = auditHonorariosData?.porCliente?.[cliente];
+  const pdf = data?.pdfs?.find(p => p.id === itemId);
+  if (!pdf || !pdf.parsed) return;
+  const cinfo = CLIENTES_CARPETAS[cliente] || {};
+  try {
+    await appendHonorariosRow({
+      cliente,
+      cuit: cinfo.cuit || '',
+      mes: pdf.parsed.mes,
+      anio: pdf.parsed.anio,
+      fechaEmision: pdf.parsed.fechaEmision,
+      nroFactura: '',
+      concepto: `Honorarios ${pdf.parsed.mes} ${pdf.parsed.anio}`,
+      monto: 0,
+      estado: 'Pendiente',
+      fechaPago: '',
+      notas: 'Auto-cargado desde PDF — completar monto y N° factura',
+      pdf: pdf.name,
+      tipo: 'Propia',
+    });
+    auditHonorariosData = null;
+    await auditarPDFsHonorarios();
+  } catch (e) { showError('No se pudo registrar el PDF: ' + e.message); setStatus('Error','err'); }
+}
+async function renombrarPDFHonorarios(cliente, itemId, sugerencia) {
+  const nuevo = window.prompt('Nuevo nombre del archivo:', sugerencia || '');
+  if (!nuevo) return;
+  try {
+    await renameDriveItemHonorarios(itemId, nuevo);
+    await auditarPDFsHonorarios();
+  } catch (e) { showError('No se pudo renombrar: ' + e.message); setStatus('Error','err'); }
+}
+window.marcarFacturaHonorarios = marcarFacturaHonorarios;
+window.openIngresoHonorariosModal = openIngresoHonorariosModal;
+window.desestimarHonorarios = desestimarHonorarios;
+window.auditarPDFsHonorarios = auditarPDFsHonorarios;
+window.registrarPDFHonorarios = registrarPDFHonorarios;
+window.renombrarPDFHonorarios = renombrarPDFHonorarios;
 
 // ╔════════════════════════════════════════════════════════════════════════╗
 // ║ LOAD ALL                                                                ║
@@ -1093,6 +1409,7 @@ function drawResumenCharts() {
 }
 
 // ── TAB: INGRESOS ────────────────────────────────────────────────────────
+
 function renderIngresosTab() {
   const { y, m, tx } = selMonth();
   const { devengado, cobrado, porCobrar } = honorariosForMonth(y, m);
@@ -1101,6 +1418,10 @@ function renderIngresosTab() {
   const totalDevengado = sum(devengado, 'monto');
   const totalOtros = sum(otros, 'Importe');
   const totalPendiente = sum(porCobrar, 'monto');
+  const faltantes = detectFaltantesHonorarios(y, m);
+  const ingresosPeriodo = facturas
+    .filter(f => f.anioServicio === y && f.mesServicio === m && f.tipo !== 'Desestimada')
+    .sort((a,b) => String(a.cliente).localeCompare(String(b.cliente)));
   const ingresosHistoricos = (() => {
     const keys = new Set();
     facturas.forEach(f => { if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); if (f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); });
@@ -1113,12 +1434,99 @@ function renderIngresosTab() {
       return { k, honCob, honDev, manual, total: honCob + manual };
     });
   })();
+
+  const tipoBadge = (tipo) => {
+    const t = tipo || 'Propia';
+    const cls = t === 'Compartida' ? 'badge-warn' : (t === 'Sin Factura' ? 'badge-mauve' : (t === 'Desestimada' ? 'badge-anulada' : 'badge-info'));
+    return `<span class="badge ${cls}">${escapeHtml(t)}</span>`;
+  };
+  const estadoBadge = (estado) => {
+    if (estado === 'Pagada') return '<span class="badge badge-pagada">Pagada</span>';
+    if (estado === 'Anulada') return '<span class="badge badge-anulada">Anulada</span>';
+    return '<span class="badge badge-pendiente">Pendiente</span>';
+  };
+
+  const auditHtml = auditHonorariosData ? `
+    <div class="card" style="margin-top:18px">
+      <div class="section-header">
+        <div><div class="card-title" style="margin-bottom:4px">Auditoría de PDFs de facturación</div><div style="font-size:12px;color:var(--text-muted)">Última verificación: ${escapeHtml(auditHonorariosData.scannedAt)}</div></div>
+        <button class="btn btn-slate btn-sm" onclick="auditarPDFsHonorarios()" ${auditingHonorarios ? 'disabled' : ''}>${auditingHonorarios ? 'Escaneando…' : '↻ Escanear nuevamente'}</button>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <span class="badge badge-pagada">✓ ${auditHonorariosData.summary.ok} OK</span>
+        ${auditHonorariosData.summary.malNombrados ? `<span class="badge badge-pendiente">⚠ ${auditHonorariosData.summary.malNombrados} mal nombrados</span>` : ''}
+        ${auditHonorariosData.summary.sinRegistrar ? `<span class="badge badge-info">◯ ${auditHonorariosData.summary.sinRegistrar} sin registrar</span>` : ''}
+        ${auditHonorariosData.summary.sinCarpeta ? `<span class="badge badge-anulada">◌ ${auditHonorariosData.summary.sinCarpeta} sin carpeta</span>` : ''}
+      </div>
+      ${Object.entries(auditHonorariosData.porCliente).map(([cliente,data]) => `
+        <div style="margin-bottom:18px">
+          <h3 style="font-size:16px;margin-bottom:4px">${escapeHtml(cliente)}</h3>
+          <div style="font-size:11px;color:var(--text-muted);font-family:monospace;margin-bottom:8px">${escapeHtml(data.folder || '')}</div>
+          ${data.error ? `<div class="notice warn">⚠ ${escapeHtml(data.error)}</div>` : ''}
+          ${!data.error && data.pdfs.length === 0 ? `<p style="font-size:12px;color:var(--text-muted);font-style:italic">Sin PDFs.</p>` : ''}
+          ${!data.error ? data.pdfs.map(pdf => `
+            <div class="audit-item ${pdf.status === 'ok' ? 'ok' : (pdf.status === 'mal-nombrado' ? 'warn' : 'info')}">
+              <div style="flex:1;min-width:0"><div style="font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(pdf.name)}</div>${pdf.hint ? `<div style="font-size:11px;color:var(--text-soft);margin-top:3px">${escapeHtml(pdf.hint)}</div>` : ''}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                ${pdf.status === 'sin-registrar' && pdf.parsed ? `<button class="btn btn-success btn-sm" onclick="registrarPDFHonorarios('${escapeHtml(cliente)}','${escapeHtml(pdf.id)}')">＋ Registrar en Excel</button>` : ''}
+                ${pdf.status === 'mal-nombrado' && pdf.sugerencia ? `<button class="btn btn-mauve btn-sm" onclick="renombrarPDFHonorarios('${escapeHtml(cliente)}','${escapeHtml(pdf.id)}','${escapeHtml(pdf.sugerencia)}')">✎ Renombrar</button>` : ''}
+                ${pdf.webUrl ? `<a class="btn btn-outline btn-sm" href="${pdf.webUrl}" target="_blank" rel="noopener">Abrir</a>` : ''}
+              </div>
+            </div>
+          `).join('') : ''}
+        </div>
+      `).join('')}
+    </div>` : '';
+
   return `
+    ${faltantes.length ? `<div class="notice warn">
+      <div style="flex:1"><strong>⚠ Pendientes de emisión / registro — ${MES_NAMES[m-1]} ${y}:</strong><br>${faltantes.map(f=>escapeHtml(f.cliente)).join(' · ')}</div>
+    </div>
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-title">Acciones rápidas para clientes recurrentes sin registro</div>
+      ${faltantes.map(f => `<div class="pending-item">
+        <div><div class="pending-name">${escapeHtml(f.cliente)}</div><div class="pending-meta">${escapeHtml(f.mes)} ${f.anio}</div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-success btn-sm" onclick="openIngresoHonorariosModal('${escapeHtml(f.cliente)}','${escapeHtml(f.mes)}',${f.anio})">＋ Registrar ingreso</button>
+          <button class="btn btn-outline btn-sm" onclick="desestimarHonorarios('${escapeHtml(f.cliente)}','${escapeHtml(f.mes)}',${f.anio})">Desestimar</button>
+        </div>
+      </div>`).join('')}
+    </div>` : ''}
+
     <div class="grid-3" style="margin-bottom:18px">
-      <div class="kpi sage"><div class="kpi-label">Honorarios cobrados</div><div class="kpi-value sage">${fmtARS(totalCobrado)}</div><div class="kpi-sub">${cobrado.length} factura(s) con fecha de pago en ${MES_NAMES[m-1]} ${y}</div></div>
-      <div class="kpi slate"><div class="kpi-label">Honorarios devengados</div><div class="kpi-value slate">${fmtARS(totalDevengado)}</div><div class="kpi-sub">${devengado.length} factura(s) del período</div></div>
+      <div class="kpi sage"><div class="kpi-label">Honorarios cobrados</div><div class="kpi-value sage">${fmtARS(totalCobrado)}</div><div class="kpi-sub">${cobrado.length} registro(s) con fecha de pago en ${MES_NAMES[m-1]} ${y}</div></div>
+      <div class="kpi slate"><div class="kpi-label">Devengado / facturado del mes</div><div class="kpi-value slate">${fmtARS(totalDevengado)}</div><div class="kpi-sub">${devengado.length} registro(s) del período</div></div>
       <div class="kpi warm"><div class="kpi-label">Pendiente acumulado</div><div class="kpi-value warm">${fmtARS(totalPendiente)}</div><div class="kpi-sub">${porCobrar.length} registro(s) pendiente(s)</div></div>
     </div>
+
+    <div class="grid-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-title">Facturas / ingresos del período — ${MES_NAMES[m-1]} ${y}</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>N°</th><th class="num">Monto</th><th>Acción</th></tr></thead>
+          <tbody>
+            ${ingresosPeriodo.length ? ingresosPeriodo.map(f => `<tr>
+              <td><strong>${escapeHtml(f.cliente)}</strong><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(f.concepto || '')}</div></td>
+              <td>${tipoBadge(f.tipo)}</td>
+              <td>${estadoBadge(f.estado)}</td>
+              <td style="font-family:monospace;font-size:12px">${escapeHtml(f.nroFactura || '')}</td>
+              <td class="num">${fmtARS(f.monto)}</td>
+              <td>
+                ${f.estado === 'Pendiente' && f.tipo !== 'Desestimada' ? `<button class="btn btn-success btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pagada')">✓ Marcar pagada</button>` : ''}
+                ${f.estado === 'Pagada' ? `<button class="btn btn-danger btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pendiente')">↩ Revertir</button>` : ''}
+              </td>
+            </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">Sin registros para este período.</td></tr>'}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="card"><div class="section-header"><div class="card-title" style="margin-bottom:0">Auditoría / carga automática de PDFs</div><button class="btn btn-slate btn-sm" onclick="auditarPDFsHonorarios()" ${auditingHonorarios ? 'disabled' : ''}>${auditingHonorarios ? 'Escaneando…' : 'Auditar PDFs'}</button></div>
+        <p style="font-size:13px;color:var(--text-soft);line-height:1.6">Escanea las carpetas de facturación propia de cada cliente, detecta PDFs nuevos y permite cargarlos al Excel de honorarios. El formato esperado es <strong>PREFIJO_AAAAMMDD_MES AÑO.pdf</strong>.</p>
+        <div style="margin-top:14px">
+          <div class="pending-item"><div><div class="pending-name">Otros ingresos manuales del mes</div><div class="pending-meta">Cargados desde movimientos generales</div></div><div class="pending-amount sage">${fmtARS(totalOtros)}</div></div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2" style="margin-bottom:18px">
       <div class="card"><div class="card-title">Facturas cobradas en el mes</div>
         <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>N°</th><th class="num">Monto</th><th>Fecha pago</th></tr></thead><tbody>
@@ -1132,17 +1540,21 @@ function renderIngresosTab() {
         </tbody></table></div>
       </div>
     </div>
-    <div class="card" style="margin-bottom:18px"><div class="card-title">Pendientes de cobro</div>
-      <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>Concepto</th><th class="num">Monto</th></tr></thead><tbody>
-        ${porCobrar.length ? porCobrar.map(f => `<tr><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${escapeHtml(f.concepto||'')}</td><td class="num">${fmtARS(f.monto)}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px">Sin pendientes 🎉</td></tr>'}
+
+    <div class="card" style="margin-bottom:18px"><div class="card-title">Pendientes de cobro acumulados</div>
+      <div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Período</th><th>Tipo</th><th>Concepto</th><th class="num">Monto</th><th>Acción</th></tr></thead><tbody>
+        ${porCobrar.length ? porCobrar.map(f => `<tr><td><strong>${escapeHtml(f.cliente)}</strong></td><td>${f.mesTxt} ${f.anioServicio}</td><td>${tipoBadge(f.tipo)}</td><td>${escapeHtml(f.concepto||'')}</td><td class="num">${fmtARS(f.monto)}</td><td><button class="btn btn-success btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pagada')">✓ Marcar pagada</button></td></tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">Sin pendientes 🎉</td></tr>'}
       </tbody></table></div>
     </div>
+
     <div class="card"><div class="card-title">Histórico mensual de ingresos</div>
       <div class="table-wrap"><table><thead><tr><th>Mes</th><th class="num">Honorarios cobrados</th><th class="num">Otros ingresos</th><th class="num">Total cobrado</th><th class="num">Devengado</th></tr></thead><tbody>
         ${ingresosHistoricos.map(r => `<tr><td><strong>${labelMonthKey(r.k)}</strong></td><td class="num">${fmtARS(r.honCob)}</td><td class="num">${fmtARS(r.manual)}</td><td class="num" style="font-weight:600;color:var(--sage)">${fmtARS(r.total)}</td><td class="num">${fmtARS(r.honDev)}</td></tr>`).join('')}
       </tbody></table></div>
-    </div>`;
+    </div>
+    ${auditHtml}`;
 }
+
 
 // ── TAB: PAGOS DEL MES ───────────────────────────────────────────────────
 function renderPagosTab() {
@@ -1689,7 +2101,7 @@ function openAporteMetaModal(rowIndex) {
 function openDeudaModal(tipo='Por pagar', rowIndex=null) {
   const r=rowIndex?rows.deudas.find(x=>x.__rowIndex===rowIndex):null; const cat=r?.Categoría||'Préstamos / Deudas';
   $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar':'Agregar'} deuda</h2><form id="deudaForm"><div class="form-row"><div class="form-group"><label>Tipo</label><select name="tipo"><option ${tipo==='Por pagar'?'selected':''}>Por pagar</option><option ${tipo==='Por cobrar'?'selected':''}>Por cobrar</option></select></div><div class="form-group"><label>Contraparte</label><input name="contraparte" value="${escapeHtml(r?.Contraparte||'')}" required></div></div><div class="form-row"><div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" value="${r?.Monto||''}" required></div><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div></div><div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r?.Subcategoría||'')}</select></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
-  $('#deudaForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ if(r){ const er=excelRowFromIndex('deudas',rowIndex); await patchCells(SHEETS.deudas,[['B'+er,fd.tipo],['C'+er,fd.contraparte],['D'+er,Number(fd.monto)],['E'+er,fd.moneda],['I'+er,fd.notas||''],['J'+er,fd.categoria],['K'+er,fd.subcategoria||'']]); } else { await addRow(TABLES.deudas,[nextId(rows.deudas),fd.tipo,fd.contraparte,Number(fd.monto),fd.moneda,'','','Pendiente',fd.notas||'',fd.categoria,fd.subcategoria||'','','','','']); } closeModal(); await loadAll(); }catch(e){showError('No se pudo guardar deuda: '+e.message);} });
+  $('#deudaForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ if(r){ const er=excelRowFromIndex('deudas',rowIndex); await patchCells(SHEETS.deudas,[['B'+er,fd.tipo],['C'+er,fd.contraparte],['D'+er,Number(fd.monto)],['E'+er,fd.moneda],['I'+er,fd.notas||''],['J'+er,fd.categoria],['K'+er,fd.subcategoria||'']]); } else { await addRow(TABLES.deudas,[nextId(rows.deudas),fd.tipo,fd.contraparte,Number(fd.monto),fd.moneda,'','','Pendiente',fd.notas||'',fd.categoria,fd.subcategoria||'','','']); } closeModal(); await loadAll(); }catch(e){showError('No se pudo guardar deuda: '+e.message);} });
 }
 function openSettleDebtModal(rowIndex) {
   const r=rows.deudas.find(x=>x.__rowIndex===rowIndex); if(!r) return; const isPay=r.Tipo==='Por pagar'; const cat=r.Categoría||'Préstamos / Deudas';
@@ -2159,9 +2571,15 @@ function openFijoModal(rowIndex = null) {
             <label>Concepto</label>
             <input type="text" name="concepto" required value="${escapeHtml(existing?.Concepto || '')}">
           </div>
-          <div class="form-group">
-            <label>Categoría</label>
-            <select name="categoria">${CATEGORIAS_GASTO.map(c => `<option ${existing?.Categoría===c?'selected':''}>${c}</option>`).join('')}</select>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Categoría</label>
+              <select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c => `<option ${existing?.Categoría===c?'selected':''}>${c}</option>`).join('')}</select>
+            </div>
+            <div class="form-group">
+              <label>Subcategoría</label>
+              <select name="subcategoria">${subcatOptions(existing?.Categoría || CATEGORIAS_GASTO[0], existing?.Subcategoría || '')}</select>
+            </div>
           </div>
           <div class="form-row-3">
             <div class="form-group">
@@ -2206,9 +2624,10 @@ function openFijoModal(rowIndex = null) {
         await patchCell(SHEETS.fijos, 'G' + r, fd.medio);
         await patchCell(SHEETS.fijos, 'H' + r, fd.activo);
         await patchCell(SHEETS.fijos, 'K' + r, fd.notas || '');
+        await patchCell(SHEETS.fijos, 'L' + r, fd.subcategoria || '');
       } else {
         const row = [nextId(rows.fijos), fd.concepto, fd.categoria, Number(fd.estimado || 0), 'ARS',
-                    fd.diavto ? Number(fd.diavto) : '', fd.medio, fd.activo || 'SI', 'Normal', '', fd.notas || ''];
+                    fd.diavto ? Number(fd.diavto) : '', fd.medio, fd.activo || 'SI', 'Normal', '', fd.notas || '', fd.subcategoria || ''];
         await addRow(TABLES.fijos, row);
       }
       closeModal(); await loadAll();
