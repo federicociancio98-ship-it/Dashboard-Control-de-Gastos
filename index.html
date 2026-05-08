@@ -317,7 +317,32 @@ const SHEETS = {
 };
 const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
 const MES_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-const CATEGORIAS_GASTO = ['Auto','Servicios / Suscripciones','Alquiler','Almacen / Kiosco / Super','Restaurante / Delivery / Vianda','Fiestas / Bar / Boliche','Carnicería / Verdulería','Comida / Juntadas con amigos','Nafta auto','Gimnasio / Club / Deportes','Ropa','Electrónica / Electrodomésticos','Matrícula / Monotributo / Caja','Peluquería / Salud / Suplementos','Regalos','Limpieza','Viajes / Vacaciones','Inversiones / Ahorros','Pomelo','Tarjeta de crédito','Otros'];
+const SUBCATEGORIAS = {
+  'Alquiler / Expensas': ['Alquiler dueño','Alquiler inmobiliaria','Expensas','Depósito / garantía','Otros vivienda fija'],
+  'Servicios / Suscripciones': ['Agua','Luz','Gas','Internet','Streaming / apps','Software / nube','Telefonía','Otros servicios'],
+  'Supermercado / Almacén': ['Supermercado','Almacén','Kiosco','Bebidas','Congelados / almacén','Otros despensa'],
+  'Carnicería / Verdulería': ['Carnicería','Verdulería','Pollería','Pescadería','Asado / carne para juntada','Otros frescos'],
+  'Comidas afuera / Delivery / Viandas': ['Vianda','Delivery','Restaurante','Fast food','Café / desayuno','Helado / postre','Otros comida preparada'],
+  'Salidas / Bares / Eventos': ['Bar','Boliche / fiesta','Entradas / recitales','Cumpleaños / evento','Salida con amigos','Otros ocio'],
+  'Auto / Mantenimiento': ['Cuota auto','Seguro','Patente','Service','Repuestos','Taller mecánico','Lavadero / estacionamiento','Otros auto'],
+  'Combustible': ['Nafta','Gasoil','GNC','Carga ruta','Otros combustible'],
+  'Hogar / Muebles / Mantenimiento': ['Muebles','Ferretería','Herramientas','Blancos / ropa de cama','Decoración','Jardín / pileta','Reparaciones','Otros hogar'],
+  'Tecnología / Electrónica': ['Celular','Computación','Audio / accesorios','TV / electrodoméstico','Smartwatch / gadgets','Cables / cargadores','Otros tecnología'],
+  'Ropa / Calzado': ['Ropa diaria','Calzado','Ropa deportiva','Ropa formal','Accesorios','Otros ropa'],
+  'Salud / Farmacia': ['Obra social','Farmacia','Médico / estudios','Odontología','Óptica','Otros salud'],
+  'Suplementos / Nutrición deportiva': ['Proteína','Creatina','Vitaminas','Suplemento general','Nutrición deportiva','Otros suplementos'],
+  'Cuidado personal': ['Peluquería / barbería','Perfumes','Higiene personal','Cosmética','Afeitadora / accesorios','Otros cuidado personal'],
+  'Deporte / Club': ['Cuota club','Gimnasio','Rugby / deporte','Equipamiento deportivo','Entrenamiento','Otros deporte'],
+  'Mascota / Pomelo': ['Alimento','Veterinaria','Higiene / peluquería','Accesorios','Medicamentos mascota','Otros mascota'],
+  'Regalos': ['Cumpleaños','Familia','Amigos','Pareja','Navidad / eventos','Otros regalos'],
+  'Viajes / Vacaciones': ['Vuelos / pasajes','Alojamiento','Comidas en viaje','Transporte en viaje','Equipaje / valijas','Actividades / entradas','Otros viaje'],
+  'Impuestos / Matrículas / Profesión': ['Monotributo','Caja Ingenieros','Colegio / matrícula','Impuestos / tasas','Visados / trámites','Otros profesión'],
+  'Ahorro / Inversiones': ['Aporte a meta','Compra acciones','Compra cripto','FCI / plazo fijo','Dólares / moneda extranjera','Otros ahorro / inversión'],
+  'Pago tarjeta de crédito': ['Resumen tarjeta','Pago parcial tarjeta','Pago financiación tarjeta','Otros pagos tarjeta'],
+  'Préstamos / Deudas': ['Préstamo familiar','Préstamo personal','Deuda taller / proveedor','Devolución deuda','Otros préstamos'],
+  'Otros': ['General','Sin clasificar','Revisar categoría','Extraordinario']
+};
+const CATEGORIAS_GASTO = Object.keys(SUBCATEGORIAS);
 const CATEGORIAS_INGRESO = ['Sueldo Zavalla','Sueldo MATTFRA','Sueldo ARNOLD','Sueldo MUÑOZ','Sueldo SERVICIOS','Otros'];
 const MEDIOS_PAGO_NO_TC = ['Efectivo','Débito','Transferencia','MercadoPago','Sin especificar'];
 // Paleta de colores Honorarios para charts
@@ -496,6 +521,13 @@ async function patchRange(sheet, address, values2d) {
   });
 }
 async function addRow(tableName, values) {
+  const key0 = tableKeyFromName(tableName);
+  if (key0 && raw[key0]?.address) {
+    const p0 = a1Parts(raw[key0].address);
+    const expected = p0.endColNum - p0.startColNum + 1;
+    if (values.length < expected) values = values.concat(Array(expected - values.length).fill(''));
+    if (values.length > expected) values = values.slice(0, expected);
+  }
   try {
     await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, { method: 'POST', body: JSON.stringify({ values: [values] }) });
   } catch (e) {
@@ -643,7 +675,7 @@ function normalizeRows() {
   rows.cuotas.forEach(r => { r.MontoCuota = Number(r.MontoCuota || 0); r.Mes = Number(r.Mes || 0); r.Año = Number(r.Año || 0); });
   rows.deudas.forEach(r => r.Monto = Number(r.Monto || 0));
   rows.inversiones.forEach(r => ['Cantidad','PPC','PrecioActual','GananciaARS','TenenciaARS'].forEach(f => r[f] = Number(r[f] || 0)));
-  rows.ahorro.forEach(r => { r.MontoObjetivo = Number(r.MontoObjetivo || 0); r.MontoAporte = Number(r.MontoAporte || 0); });
+  rows.ahorro.forEach(r => { r.MontoObjetivo = Number(r.MontoObjetivo || 0); r.MontoAporte = Number(r.MontoAporte || 0); r.MontoActual = Number(r.MontoActual || r.MontoAporte || 0); });
   rows.fijos.forEach(r => { r.MontoEstimado = Number(r.MontoEstimado || 0); r.DíaVto = Number(r.DíaVto || 0); });
   rows.pagos.forEach(r => { r.MontoEstimado = Number(r.MontoEstimado || 0); r.MontoReal = Number(r.MontoReal || 0); r.Mes = Number(r.Mes || 0); r.Año = Number(r.Año || 0); });
   rows.tarjetasConfig.forEach(r => { r.DiaCierre = Number(r.DiaCierre || 0); r.DiaVencimiento = Number(r.DiaVencimiento || 0); r.Limite = Number(r.Limite || 0); });
@@ -834,9 +866,9 @@ async function upsertResumenReal(tarjeta, y, m, monto, estado = 'Pendiente', fec
 async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas) {
   const d = new Date(fechaInput + 'T00:00:00');
   const txRow = [
-    nextId(rows.transacciones), dateToExcelSerial(fechaInput), 'Gasto', 'Tarjeta de crédito',
+    nextId(rows.transacciones), dateToExcelSerial(fechaInput), 'Gasto', 'Pago tarjeta de crédito',
     'Pago resumen ' + tarjeta, Number(monto || 0), 'ARS', medio || 'Transferencia', notas || '',
-    d.getMonth() + 1, d.getFullYear()
+    d.getMonth() + 1, d.getFullYear(), 'Resumen tarjeta'
   ];
   const parts = a1Parts(raw.transacciones.address);
   const newRowIndex = (parts.endRow - parts.startRow + 1);
@@ -844,7 +876,7 @@ async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas
   rows.transacciones.push({
     __rowIndex: newRowIndex, __address: raw.transacciones.address,
     ID: txRow[0], Fecha: txRow[1], Tipo: txRow[2], Categoría: txRow[3], Descripción: txRow[4],
-    Importe: txRow[5], Moneda: txRow[6], MedioPago: txRow[7], Notas: txRow[8], Mes: txRow[9], Año: txRow[10]
+    Importe: txRow[5], Moneda: txRow[6], MedioPago: txRow[7], Notas: txRow[8], Mes: txRow[9], Año: txRow[10], Subcategoría: txRow[11]
   });
 }
 function cardColor(name, idx = 0) {
@@ -1306,7 +1338,13 @@ function renderTarjetasTab() {
           </table>
         </div>
       </div>
-    </div>`;
+    </div>
+    <details class="card" style="margin-top:18px" open>
+      <summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Detalle editable de compras con tarjeta</summary>
+      <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Tarjeta</th><th>Descripción</th><th>Categoría</th><th class="num">Importe neto</th><th>Cuotas</th><th>Acción</th></tr></thead><tbody>
+        ${rows.tarjetas.filter(r=>String(r.Estado||'').toUpperCase()!=='ANULADA').sort((a,b)=>(excelDateToDate(b.Fecha)?.getTime()||0)-(excelDateToDate(a.Fecha)?.getTime()||0)).slice(0,80).map(r=>`<tr><td>${dateText(r.Fecha)}</td><td>${escapeHtml(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${escapeHtml(r.Categoría||'')}</td><td class="num">${fmtARS(r.ImporteNeto||r.ImporteTotal)}</td><td>${r.Cuotas||''}</td><td><button class="btn btn-outline btn-sm" onclick="openCompraTarjetaEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteCompraTarjeta(${r.__rowIndex})">Eliminar</button></td></tr>`).join('')}
+      </tbody></table></div>
+    </details>`;
 }
 function drawTarjetasCharts() {
   const today = new Date();
@@ -1395,17 +1433,17 @@ function renderCategoriasTab() {
   return `
     <div class="grid-2">
       <div class="card">
-        <div class="card-title">Distribución porcentual</div>
+        <div class="card-title">Distribución porcentual por categoría</div>
         <div class="chart-box tall"><canvas id="catDonut"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-title">Ranking por monto</div>
+        <div class="card-title">Ranking por categoría</div>
         <div class="chart-box tall"><canvas id="catBars"></canvas></div>
       </div>
     </div>
-    <div class="card" style="margin-top:20px">
-      <div class="card-title">Tabla por categoría</div>
-      <div id="catTable"></div>
+    <div class="grid-2" style="margin-top:20px">
+      <div class="card"><div class="card-title">Tabla por categoría</div><div id="catTable"></div></div>
+      <div class="card"><div class="card-title">Detalle por subcategoría</div><div id="subcatTable"></div></div>
     </div>`;
 }
 function drawCategoriasCharts() {
@@ -1413,26 +1451,18 @@ function drawCategoriasCharts() {
   const gastos = tx.filter(r => r.Tipo === 'Gasto');
   const total = sum(gastos, 'Importe');
   const gs = groupSum(gastos, 'Categoría', 'Importe');
+  const sub = groupSum(gastos, 'Subcategoría', 'Importe');
   charts.catDonut = new Chart(document.getElementById('catDonut'), {
     type: 'doughnut',
-    data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
-      plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
+    data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
   });
   charts.catBars = new Chart(document.getElementById('catBars'), {
     type: 'bar', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: gs.map((_, i) => COLORS_PALETTE[i % COLORS_PALETTE.length]), borderRadius: 4 }] },
-    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } }, y: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } } } }
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } }, y: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } } } }
   });
-  $('#catTable').innerHTML = `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Categoría</th><th class="num">Monto</th><th class="num">% del total</th></tr></thead>
-      <tbody>${gs.map(x => `<tr>
-        <td><strong>${escapeHtml(x.key)}</strong></td>
-        <td class="num">${fmtARS(x.value)}</td>
-        <td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td>
-      </tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin gastos en este mes.</td></tr>'}</tbody>
-    </table></div>`;
+  $('#catTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Categoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${gs.map(x => `<tr><td><strong>${escapeHtml(x.key)}</strong></td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin gastos.</td></tr>'}</tbody></table></div>`;
+  $('#subcatTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Subcategoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${sub.map(x => `<tr><td>${escapeHtml(x.key || 'Sin subcategoría')}</td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin subcategorías.</td></tr>'}</tbody></table></div>`;
 }
 
 // ── TAB: MOVIMIENTOS ─────────────────────────────────────────────────────
@@ -1469,74 +1499,28 @@ function renderMovimientosTab() {
 
 // ── TAB: OTROS (DEUDAS / INVERSIONES / AHORRO) ───────────────────────────
 function renderOtrosTab() {
-  const pend = rows.deudas.filter(r => String(r.Estado).toLowerCase() !== 'pagada');
-  const pagar  = pend.filter(r => r.Tipo === 'Por pagar');
-  const cobrar = pend.filter(r => r.Tipo === 'Por cobrar');
-  const totalInv = sum(rows.inversiones, 'TenenciaARS');
-  const gainInv = sum(rows.inversiones, 'GananciaARS');
+  const deudasActivas = rows.deudas.filter(r => String(r.Estado || '').toLowerCase() !== 'pagada' && String(r.Estado || '').toLowerCase() !== 'cobrada' && String(r.Estado || '').toLowerCase() !== 'anulada');
+  const pagar  = deudasActivas.filter(r => r.Tipo === 'Por pagar');
+  const cobrar = deudasActivas.filter(r => r.Tipo === 'Por cobrar');
+  const invActivas = rows.inversiones.filter(r => String(r.Estado || 'Activa').toLowerCase() !== 'eliminada');
+  const totalInv = sum(invActivas, 'TenenciaARS');
+  const gainInv = sum(invActivas, 'GananciaARS');
   return `
     <div class="grid-2" style="margin-bottom:18px">
-      <div class="card">
-        <div class="section-header"><h3>Deudas — Por pagar</h3><span class="badge badge-pendiente">${pagar.length}</span></div>
-        ${pagar.length ? pagar.map(r => `
-          <div class="pending-item">
-            <div>
-              <div class="pending-name">${escapeHtml(r.Contraparte)}</div>
-              <div class="pending-meta">${escapeHtml(r.Notas || '')} ${r.FechaVencimiento ? `· Vto: ${dateText(r.FechaVencimiento)}` : ''}</div>
-            </div>
-            <div class="pending-amount">${fmtMoney(r.Monto, r.Moneda)}</div>
-          </div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin deudas por pagar 🎉</p>'}
+      <div class="card"><div class="section-header"><h3>Deudas — Por pagar</h3><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por pagar')">+ Agregar</button></div>
+        ${pagar.length ? pagar.map(r => `<div class="pending-item"><div><div class="pending-name">${escapeHtml(r.Contraparte)}</div><div class="pending-meta">${escapeHtml(r.Notas || '')} · ${escapeHtml(r.Categoría || '')}${r.Subcategoría ? ' / ' + escapeHtml(r.Subcategoría) : ''}</div></div><div style="display:flex;align-items:center;gap:8px"><div class="pending-amount">${fmtMoney(r.Monto, r.Moneda)}</div><button class="btn btn-success btn-sm" onclick="openSettleDebtModal(${r.__rowIndex})">Pagar</button><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por pagar', ${r.__rowIndex})">Editar</button></div></div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin deudas por pagar 🎉</p>'}
       </div>
-      <div class="card">
-        <div class="section-header"><h3>Deudas — Por cobrar</h3><span class="badge badge-info">${cobrar.length}</span></div>
-        ${cobrar.length ? cobrar.map(r => `
-          <div class="pending-item">
-            <div>
-              <div class="pending-name">${escapeHtml(r.Contraparte)}</div>
-              <div class="pending-meta">${escapeHtml(r.Notas || '')}</div>
-            </div>
-            <div class="pending-amount sage">${fmtMoney(r.Monto, r.Moneda)}</div>
-          </div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin deudas por cobrar.</p>'}
+      <div class="card"><div class="section-header"><h3>Deudas — Por cobrar</h3><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por cobrar')">+ Agregar</button></div>
+        ${cobrar.length ? cobrar.map(r => `<div class="pending-item"><div><div class="pending-name">${escapeHtml(r.Contraparte)}</div><div class="pending-meta">${escapeHtml(r.Notas || '')}</div></div><div style="display:flex;align-items:center;gap:8px"><div class="pending-amount sage">${fmtMoney(r.Monto, r.Moneda)}</div><button class="btn btn-success btn-sm" onclick="openSettleDebtModal(${r.__rowIndex})">Cobrar</button><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por cobrar', ${r.__rowIndex})">Editar</button></div></div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin deudas por cobrar.</p>'}
       </div>
     </div>
-
     <div class="grid-2" style="margin-bottom:18px">
-      <div class="card">
-        <div class="card-title">Inversiones</div>
-        <div style="display:flex;gap:18px;margin-bottom:14px;flex-wrap:wrap">
-          <div><div class="kpi-label">Tenencia total</div><div style="font-family:'DM Serif Display';font-size:22px">${fmtARS(totalInv)}</div></div>
-          <div><div class="kpi-label">Ganancia / Pérdida</div><div style="font-family:'DM Serif Display';font-size:22px;color:${gainInv>=0?'var(--sage)':'var(--warm)'}">${fmtARS(gainInv)}</div></div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Ticker</th><th>Tipo</th><th class="num">Cantidad</th><th class="num">PPC</th><th class="num">Precio</th><th class="num">Tenencia</th></tr></thead>
-            <tbody>
-              ${rows.inversiones.map(r => `<tr>
-                <td><strong>${escapeHtml(r.Ticker)}</strong></td>
-                <td>${escapeHtml(r.TipoActivo || '')}</td>
-                <td class="num">${fmtNum(r.Cantidad)}</td>
-                <td class="num">${fmtMoney(r.PPC, r.Moneda)}</td>
-                <td class="num">${fmtMoney(r.PrecioActual, r.Moneda)}</td>
-                <td class="num">${fmtARS(r.TenenciaARS)}</td>
-              </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">Sin inversiones registradas.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
+      <div class="card"><div class="section-header"><div><div class="card-title" style="margin-bottom:4px">Inversiones</div><div style="font-size:12px;color:var(--text-muted)">Acciones, bonos, cripto, plazo fijo y fondos.</div></div><button class="btn btn-outline btn-sm" onclick="openInversionModal()">+ Agregar inversión</button></div>
+        <div style="display:flex;gap:18px;margin-bottom:14px;flex-wrap:wrap"><div><div class="kpi-label">Tenencia total</div><div style="font-family:'DM Serif Display';font-size:22px">${fmtARS(totalInv)}</div></div><div><div class="kpi-label">Ganancia / Pérdida</div><div style="font-family:'DM Serif Display';font-size:22px;color:${gainInv>=0?'var(--sage)':'var(--warm)'}">${fmtARS(gainInv)}</div></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Tipo</th><th class="num">Cantidad</th><th class="num">PPC</th><th class="num">Precio</th><th class="num">Tenencia</th><th>Acción</th></tr></thead><tbody>${invActivas.map(r => `<tr><td><strong>${escapeHtml(r.Ticker)}</strong></td><td>${escapeHtml(r.TipoActivo || '')}</td><td class="num">${fmtNum(r.Cantidad)}</td><td class="num">${fmtMoney(r.PPC, r.Moneda)}</td><td class="num">${fmtMoney(r.PrecioActual, r.Moneda)}</td><td class="num">${fmtARS(r.TenenciaARS)}</td><td><button class="btn btn-outline btn-sm" onclick="openInversionModal(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteInversion(${r.__rowIndex})">Eliminar</button></td></tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:18px">Sin inversiones registradas.</td></tr>'}</tbody></table></div>
       </div>
-      <div class="card">
-        <div class="card-title">Metas de ahorro</div>
-        ${rows.ahorro.length ? rows.ahorro.map(r => {
-          const pct = r.MontoObjetivo ? Math.min(100, (r.MontoAporte / r.MontoObjetivo) * 100) : 0;
-          const cls = r.Estado === 'Cumplida' ? 'badge-pagada' : (r.Estado === 'Vencida' ? 'badge-pendiente' : 'badge-warn');
-          return `<div style="margin-bottom:14px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-              <span style="font-weight:600">${escapeHtml(r.Meta)}</span>
-              <span class="badge ${cls}">${escapeHtml(r.Estado || 'En curso')}</span>
-            </div>
-            <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
-            <div style="font-size:11px;color:var(--text-muted)">${fmtNum(pct)}% de ${fmtMoney(r.MontoObjetivo, r.Moneda)} · vto: ${dateText(r.FechaObjetivo)}</div>
-          </div>`;
-        }).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin metas registradas.</p>'}
+      <div class="card"><div class="section-header"><div class="card-title" style="margin-bottom:0">Metas de ahorro</div><button class="btn btn-outline btn-sm" onclick="openMetaModal()">+ Agregar meta</button></div>
+        ${rows.ahorro.length ? rows.ahorro.filter(r=>String(r.Activa||'SI').toUpperCase()==='SI').map(r => { const actual=Number(r.MontoActual||r.MontoAporte||0); const pct = r.MontoObjetivo ? Math.min(100, (actual / r.MontoObjetivo) * 100) : 0; const cls = pct>=100 ? 'badge-pagada' : (r.Estado === 'Vencida' ? 'badge-pendiente' : 'badge-warn'); return `<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-weight:600">${escapeHtml(r.Meta)}</span><span class="badge ${cls}">${pct>=100?'Cumplida':escapeHtml(r.Estado || 'En curso')}</span></div><div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div><div style="font-size:11px;color:var(--text-muted)">${fmtNum(pct)}% · ${fmtMoney(actual, r.Moneda)} de ${fmtMoney(r.MontoObjetivo, r.Moneda)} · vto: ${dateText(r.FechaObjetivo)}</div><div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="openMetaModal(${r.__rowIndex})">Editar</button> <button class="btn btn-success btn-sm" onclick="openAporteMetaModal(${r.__rowIndex})">Cargar aporte</button></div></div>`; }).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin metas registradas.</p>'}
       </div>
     </div>`;
 }
@@ -1545,6 +1529,41 @@ function renderOtrosTab() {
 // ║ MODALES                                                                 ║
 // ╚════════════════════════════════════════════════════════════════════════╝
 function closeModal() { $('#modalRoot').innerHTML = ''; }
+
+async function patchCells(sheet, updates) { for (const [addr,val] of updates) await patchCell(sheet, addr, val); }
+function excelRowFromIndex(key, rowIndex) { return parseStartRow(raw[key].address) + Number(rowIndex); }
+async function addAporteToMeta(rowIndex, monto, fechaInput) {
+  const r = rows.ahorro.find(x => Number(x.__rowIndex) === Number(rowIndex)); if (!r) return;
+  const excelRow = excelRowFromIndex('ahorro', rowIndex);
+  const actual = Number(r.MontoActual || r.MontoAporte || 0) + Number(monto || 0);
+  await patchCell(SHEETS.ahorro, 'F' + excelRow, dateToExcelSerial(fechaInput || todayInputValue()));
+  await patchCell(SHEETS.ahorro, 'G' + excelRow, actual);
+  await patchCell(SHEETS.ahorro, 'J' + excelRow, actual);
+  if (Number(r.MontoObjetivo||0) && actual >= Number(r.MontoObjetivo)) await patchCell(SHEETS.ahorro, 'H' + excelRow, 'Cumplida');
+}
+function openMetaModal(rowIndex=null) {
+  const r = rowIndex ? rows.ahorro.find(x => x.__rowIndex === rowIndex) : null;
+  $('#modalRoot').innerHTML = `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar meta':'Agregar meta de ahorro'}</h2><form id="metaForm"><div class="form-group"><label>Meta</label><input name="meta" value="${escapeHtml(r?.Meta||'')}" required></div><div class="form-row"><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div><div class="form-group"><label>Monto objetivo</label><input type="number" step="0.01" name="objetivo" value="${r?.MontoObjetivo||''}" required></div></div><div class="form-row"><div class="form-group"><label>Fecha objetivo</label><input type="date" name="fecha" value="${r?.FechaObjetivo?new Date(excelDateToDate(r.FechaObjetivo)).toISOString().slice(0,10):todayInputValue()}"></div><div class="form-group"><label>Monto actual</label><input type="number" step="0.01" name="actual" value="${r?.MontoActual||r?.MontoAporte||0}"></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
+  $('#metaForm').addEventListener('submit', async ev => { ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); setStatus('Guardando meta…','wait'); try { if (r) { const er=excelRowFromIndex('ahorro', rowIndex); await patchCells(SHEETS.ahorro, [['B'+er,fd.meta],['C'+er,fd.moneda],['D'+er,Number(fd.objetivo)],['E'+er,fd.fecha?dateToExcelSerial(fd.fecha):''],['G'+er,Number(fd.actual||0)],['H'+er,Number(fd.actual||0)>=Number(fd.objetivo||0)?'Cumplida':'En curso'],['I'+er,fd.notas||''],['J'+er,Number(fd.actual||0)],['K'+er,'SI']]); } else { await addRow(TABLES.ahorro, [nextId(rows.ahorro),fd.meta,fd.moneda,Number(fd.objetivo),fd.fecha?dateToExcelSerial(fd.fecha):'', '', Number(fd.actual||0), Number(fd.actual||0)>=Number(fd.objetivo||0)?'Cumplida':'En curso', fd.notas||'', Number(fd.actual||0),'SI']); } closeModal(); await loadAll(); } catch(e){showError('No se pudo guardar la meta: '+e.message); setStatus('Error','err');} });
+}
+function openAporteMetaModal(rowIndex) {
+  const r=rows.ahorro.find(x=>x.__rowIndex===rowIndex); if(!r) return;
+  $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>Cargar aporte — ${escapeHtml(r.Meta)}</h2><form id="aporteForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${todayInputValue()}"></div><div class="form-group"><label>Monto (${escapeHtml(r.Moneda||'ARS')})</label><input type="number" step="0.01" name="monto" required></div></div><div class="form-group"><label>Notas</label><input name="notas"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar aporte</button></div></form></div></div>`;
+  $('#aporteForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ await addAporteToMeta(rowIndex, Number(fd.monto), fd.fecha); const d=new Date((fd.fecha||todayInputValue())+'T00:00:00'); await addRow(TABLES.transacciones,[nextId(rows.transacciones),dateToExcelSerial(fd.fecha||todayInputValue()),'Gasto','Ahorro / Inversiones','Aporte meta '+r.Meta,Number(fd.monto),r.Moneda||'ARS','Transferencia',fd.notas||'',d.getMonth()+1,d.getFullYear(),'Aporte a meta']); closeModal(); await loadAll();}catch(e){showError('No se pudo cargar aporte: '+e.message);}});
+}
+function openDeudaModal(tipo='Por pagar', rowIndex=null) {
+  const r=rowIndex?rows.deudas.find(x=>x.__rowIndex===rowIndex):null; const cat=r?.Categoría||'Préstamos / Deudas';
+  $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar':'Agregar'} deuda</h2><form id="deudaForm"><div class="form-row"><div class="form-group"><label>Tipo</label><select name="tipo"><option ${tipo==='Por pagar'?'selected':''}>Por pagar</option><option ${tipo==='Por cobrar'?'selected':''}>Por cobrar</option></select></div><div class="form-group"><label>Contraparte</label><input name="contraparte" value="${escapeHtml(r?.Contraparte||'')}" required></div></div><div class="form-row"><div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" value="${r?.Monto||''}" required></div><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div></div><div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r?.Subcategoría||'')}</select></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
+  $('#deudaForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ if(r){ const er=excelRowFromIndex('deudas',rowIndex); await patchCells(SHEETS.deudas,[['B'+er,fd.tipo],['C'+er,fd.contraparte],['D'+er,Number(fd.monto)],['E'+er,fd.moneda],['I'+er,fd.notas||''],['J'+er,fd.categoria],['K'+er,fd.subcategoria||'']]); } else { await addRow(TABLES.deudas,[nextId(rows.deudas),fd.tipo,fd.contraparte,Number(fd.monto),fd.moneda,'','','Pendiente',fd.notas||'',fd.categoria,fd.subcategoria||'','','','','']); } closeModal(); await loadAll(); }catch(e){showError('No se pudo guardar deuda: '+e.message);} });
+}
+function openSettleDebtModal(rowIndex) {
+  const r=rows.deudas.find(x=>x.__rowIndex===rowIndex); if(!r) return; const isPay=r.Tipo==='Por pagar'; const cat=r.Categoría||'Préstamos / Deudas';
+  $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${isPay?'Pagar':'Cobrar'} deuda — ${escapeHtml(r.Contraparte)}</h2><form id="settleDebtForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${todayInputValue()}"></div><div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" value="${r.Monto}" required></div></div><div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r.Subcategoría||'')}</select></div></div><div class="form-group"><label>Medio</label><select name="medio">${MEDIOS_PAGO_NO_TC.map(m=>`<option>${m}</option>`).join('')}</select></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Confirmar</button></div></form></div></div>`;
+  $('#settleDebtForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ const er=excelRowFromIndex('deudas',rowIndex); const fecha=dateToExcelSerial(fd.fecha||todayInputValue()); await patchCells(SHEETS.deudas,[['H'+er,isPay?'Pagada':'Cobrada'],['J'+er,fd.categoria],['K'+er,fd.subcategoria||''],['L'+er,fecha],['M'+er,fd.medio||'Transferencia']]); const d=new Date((fd.fecha||todayInputValue())+'T00:00:00'); await addRow(TABLES.transacciones,[nextId(rows.transacciones),fecha,isPay?'Gasto':'Ingreso',isPay?fd.categoria:'Otros', (isPay?'Pago deuda ':'Cobro deuda ')+r.Contraparte, Number(fd.monto), r.Moneda||'ARS', fd.medio||'Transferencia', 'Desde panel de deudas', d.getMonth()+1, d.getFullYear(), isPay?(fd.subcategoria||''):'']); closeModal(); await loadAll(); }catch(e){showError('No se pudo confirmar deuda: '+e.message);} });
+}
+function openInversionModal(rowIndex=null){ const r=rowIndex?rows.inversiones.find(x=>x.__rowIndex===rowIndex):null; $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar':'Agregar'} inversión</h2><form id="invForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${r?.FechaRegistro?new Date(excelDateToDate(r.FechaRegistro)).toISOString().slice(0,10):todayInputValue()}"></div><div class="form-group"><label>Tipo activo</label><select name="tipo"><option>Cripto</option><option>Acciones</option><option>Bonos</option><option>Plazo fijo</option><option>FCI</option></select></div></div><div class="form-row"><div class="form-group"><label>Ticker / nombre</label><input name="ticker" value="${escapeHtml(r?.Ticker||'')}" required></div><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div></div><div class="form-row-3"><div class="form-group"><label>Cantidad</label><input type="number" step="0.000001" name="cantidad" value="${r?.Cantidad||''}"></div><div class="form-group"><label>PPC</label><input type="number" step="0.01" name="ppc" value="${r?.PPC||''}"></div><div class="form-group"><label>Precio actual</label><input type="number" step="0.01" name="precio" value="${r?.PrecioActual||''}"></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`; if(r){ $('#invForm [name="tipo"]').value=r.TipoActivo||'Acciones'; } $('#invForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); const cant=Number(fd.cantidad||0), ppc=Number(fd.ppc||0), precio=Number(fd.precio||0); const gan=(precio-ppc)*cant; const ten=precio*cant; try{ if(r){ const er=excelRowFromIndex('inversiones',rowIndex); await patchCells(SHEETS.inversiones,[['B'+er,dateToExcelSerial(fd.fecha||todayInputValue())],['D'+er,fd.tipo],['E'+er,fd.ticker],['F'+er,cant],['G'+er,ppc],['H'+er,precio],['I'+er,gan],['J'+er,ten],['K'+er,fd.moneda],['L'+er,fd.notas||''],['M'+er,'Activa']]); } else { await addRow(TABLES.inversiones,[nextId(rows.inversiones),dateToExcelSerial(fd.fecha||todayInputValue()),'Sin definir',fd.tipo,fd.ticker,cant,ppc,precio,gan,ten,fd.moneda,fd.notas||'','Activa']); } closeModal(); await loadAll(); }catch(e){showError('No se pudo guardar inversión: '+e.message);} }); }
+async function deleteInversion(rowIndex){ if(!confirm('¿Eliminar inversión? No se borra la fila histórica, se marca como Eliminada.')) return; try{ const er=excelRowFromIndex('inversiones',rowIndex); await patchCell(SHEETS.inversiones,'M'+er,'Eliminada'); await loadAll(); }catch(e){showError('No se pudo eliminar inversión: '+e.message);} }
+window.openMetaModal=openMetaModal; window.openAporteMetaModal=openAporteMetaModal; window.openDeudaModal=openDeudaModal; window.openSettleDebtModal=openSettleDebtModal; window.openInversionModal=openInversionModal; window.deleteInversion=deleteInversion;
 
 
 // ── MODAL: Cargar / editar resumen real de tarjeta ──
@@ -1635,6 +1654,7 @@ window.pickMedio = function(medio) {
 // ── MODAL: Movimiento simple (efectivo / transferencia / etc.) ──
 function openSimpleModal(kind, medioInicial) {
   const cats = kind === 'Ingreso' ? CATEGORIAS_INGRESO : CATEGORIAS_GASTO;
+  const firstCat = cats[0];
   $('#modalRoot').innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
       <div class="modal">
@@ -1642,68 +1662,42 @@ function openSimpleModal(kind, medioInicial) {
         <div class="modal-sub">${kind === 'Ingreso' ? 'Sumá un ingreso al Excel.' : 'Sumá un gasto al Excel.'}</div>
         <form id="txFormNew">
           <div class="form-row">
-            <div class="form-group">
-              <label>Fecha</label>
-              <input type="date" name="fecha" value="${todayInputValue()}" required>
-            </div>
-            <div class="form-group">
-              <label>Medio de pago</label>
-              <select name="medio">
-                ${kind === 'Gasto' ? MEDIOS_PAGO_NO_TC.map(o => `<option ${o === medioInicial ? 'selected' : ''}>${o}</option>`).join('')
-                                   : ['Transferencia','Efectivo','MercadoPago','Sin especificar'].map(o => `<option ${o === medioInicial ? 'selected' : ''}>${o}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          <div class="form-group">
-            <label>Categoría</label>
-            <select name="categoria" required onchange="toggleTxCardSelector(this.value)">
-              ${cats.map(c => `<option>${c}</option>`).join('')}
-            </select>
-          </div>
-          <div class="form-group" id="txCardSelector" style="display:none">
-            <label>Tarjeta pagada</label>
-            <select name="tarjeta">${cardNames(false).map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select>
-          </div>
-          <div class="form-group">
-            <label>Descripción</label>
-            <input type="text" name="descripcion" placeholder="Ej: Verdulería, Pago resumen BBVA">
+            <div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${todayInputValue()}" required></div>
+            <div class="form-group"><label>Medio de pago</label><select name="medio">
+              ${kind === 'Gasto' ? MEDIOS_PAGO_NO_TC.map(o => `<option ${o === medioInicial ? 'selected' : ''}>${o}</option>`).join('') : ['Transferencia','Efectivo','MercadoPago','Sin especificar'].map(o => `<option ${o === medioInicial ? 'selected' : ''}>${o}</option>`).join('')}
+            </select></div>
           </div>
           <div class="form-row">
-            <div class="form-group">
-              <label>Importe</label>
-              <input type="number" name="importe" step="0.01" required>
-            </div>
-            <div class="form-group">
-              <label>Moneda</label>
-              <select name="moneda"><option>ARS</option><option>USD</option></select>
-            </div>
+            <div class="form-group"><label>Categoría</label><select name="categoria" required onchange="updateSubcatSelect(this)">${cats.map(c => `<option>${c}</option>`).join('')}</select></div>
+            <div class="form-group"><label>Subcategoría</label><select name="subcategoria">${kind==='Gasto' ? subcatOptions(firstCat) : '<option></option>'}</select></div>
           </div>
-          <div class="form-group">
-            <label>Notas (opcional)</label>
-            <input type="text" name="notas">
+          <div class="form-group" id="txCardSelector" style="display:none"><label>Tarjeta pagada</label><select name="tarjeta">${cardNames(false).map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select></div>
+          <div class="form-group" id="txAhorroSelector" style="display:none"><label>Meta de ahorro / destino</label><select name="metaAhorro"><option value="">Sin meta específica</option>${ahorroGoalsOptions()}</select><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Si elegís una meta, el aporte se acumula automáticamente en esa meta.</div></div>
+          <div class="form-group"><label>Descripción</label><input type="text" name="descripcion" placeholder="Ej: Mueble, Pago resumen BBVA, Aporte viaje"></div>
+          <div class="form-row">
+            <div class="form-group"><label>Importe</label><input type="number" name="importe" step="0.01" required></div>
+            <div class="form-group"><label>Moneda</label><select name="moneda"><option>ARS</option><option>USD</option></select></div>
           </div>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button>
-            <button type="submit" class="btn btn-success">Guardar</button>
-          </div>
+          <div class="form-group"><label>Notas (opcional)</label><input type="text" name="notas"></div>
+          <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button type="submit" class="btn btn-success">Guardar</button></div>
         </form>
       </div>
     </div>`;
+  updateSubcatSelect($('#txFormNew [name="categoria"]'));
   $('#txFormNew').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target));
     const d = new Date(fd.fecha + 'T00:00:00');
-    const desc = fd.descripcion || (fd.categoria === 'Tarjeta de crédito' && fd.tarjeta ? ('Pago resumen ' + fd.tarjeta) : '');
-    const row = [
-      nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria,
-      desc, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '',
-      d.getMonth() + 1, d.getFullYear()
-    ];
+    const desc = fd.descripcion || (fd.categoria === 'Pago tarjeta de crédito' && fd.tarjeta ? ('Pago resumen ' + fd.tarjeta) : (fd.categoria === 'Ahorro / Inversiones' ? 'Aporte ahorro / inversión' : ''));
+    const row = [nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria, desc, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '', d.getMonth() + 1, d.getFullYear(), fd.subcategoria || ''];
     setStatus('Guardando…', 'wait');
     try {
       await addRow(TABLES.transacciones, row);
-      if (kind === 'Gasto' && fd.categoria === 'Tarjeta de crédito' && fd.tarjeta) {
+      if (kind === 'Gasto' && fd.categoria === 'Pago tarjeta de crédito' && fd.tarjeta) {
         await upsertResumenReal(fd.tarjeta, d.getFullYear(), d.getMonth() + 1, Number(fd.importe), 'Pagado', dateToExcelSerial(fd.fecha), fd.medio || '', fd.notas || 'Cargado desde movimiento');
+      }
+      if (kind === 'Gasto' && fd.categoria === 'Ahorro / Inversiones' && fd.metaAhorro) {
+        await addAporteToMeta(Number(fd.metaAhorro), Number(fd.importe), fd.fecha);
       }
       closeModal(); await loadAll();
     } catch (err) { showError('No se pudo guardar: ' + err.message); setStatus('Error', 'err'); }
@@ -1737,8 +1731,9 @@ function openTcModal() {
           </div>
           <div class="form-group">
             <label>Categoría</label>
-            <select name="categoria">${CATEGORIAS_GASTO.map(c => `<option>${c}</option>`).join('')}</select>
+            <select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c => `<option>${c}</option>`).join('')}</select>
           </div>
+          <div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(CATEGORIAS_GASTO[0])}</select></div>
           <div class="form-row-3">
             <div class="form-group">
               <label>Importe total</label>
@@ -1785,7 +1780,7 @@ function openTcModal() {
     const compra = [
       nextId(rows.tarjetas), idCompra, dateToExcelSerial(fd.fecha), fd.tarjeta,
       fd.descripcion, fd.categoria || '', total, reintegro, neto, cuotasN, valor,
-      months[0].serial, mesFin, cr, cr === 0 ? 'PAGADO' : 'PENDIENTE', 'ARS', fd.notas || ''
+      months[0].serial, mesFin, cr, cr === 0 ? 'PAGADO' : 'PENDIENTE', 'ARS', fd.notas || '', fd.subcategoria || ''
     ];
     setStatus('Guardando compra…', 'wait');
     try {
@@ -1907,7 +1902,7 @@ window.savePagoFromView = async function(i, markPaid = false, forceEstado = null
       const txRow = [
         nextId(rows.transacciones), dateToExcelSerial(todayInputValue()), 'Gasto',
         p.Categoría || 'Otros', p.Concepto, real, 'ARS', medio, 'Auto-pago desde gastos fijos',
-        new Date().getMonth() + 1, new Date().getFullYear()
+        new Date().getMonth() + 1, new Date().getFullYear(), p.Subcategoría || ''
       ];
       await addRow(TABLES.transacciones, txRow);
     }
@@ -2101,7 +2096,7 @@ function openTarjetaModal(rowIndex = null) {
         const name = fd.tarjeta.trim();
         if (allCardsFromConfig().some(c => fixedKey(c.Tarjeta) === fixedKey(name))) throw new Error('Ya existe una tarjeta con ese nombre.');
         await addRow(TABLES.tarjetasConfig, [nextId(rows.tarjetasConfig), name, fd.banco || '', fd.titular || '', fd.cierre ? Number(fd.cierre) : '', fd.vencimiento ? Number(fd.vencimiento) : '', fd.limite ? Number(fd.limite) : '', fd.activa || 'SI', fd.color || '#9b86a8', fd.notas || '']);
-        await addRow(TABLES.fijos, [nextId(rows.fijos), 'Resumen ' + name, 'Servicios / Suscripciones', 0, 'ARS', fd.vencimiento ? Number(fd.vencimiento) : 1, 'Débito', fd.activa || 'SI', 'TarjetaResumen', name, 'Auto-calculado desde planilla. Cargá el Real cuando llegue el resumen.']);
+        await addRow(TABLES.fijos, [nextId(rows.fijos), 'Resumen ' + name, 'Pago tarjeta de crédito', 0, 'ARS', fd.vencimiento ? Number(fd.vencimiento) : 1, 'Débito', fd.activa || 'SI', 'TarjetaResumen', name, 'Auto-calculado desde planilla. Cargá el Real cuando llegue el resumen.', 'Resumen tarjeta']);
       }
       closeModal(); await loadAll();
     } catch (err) { showError('No se pudo guardar la tarjeta: ' + err.message); setStatus('Error', 'err'); }
@@ -2120,6 +2115,15 @@ window.toggleTarjetaActiva = async function(rowIndex, value) {
     await loadAll();
   } catch (err) { showError('No se pudo actualizar la tarjeta: ' + err.message); setStatus('Error', 'err'); }
 };
+
+
+function openCompraTarjetaEdit(rowIndex){
+  const r=rows.tarjetas.find(x=>x.__rowIndex===rowIndex); if(!r) return; const cat=r.Categoría||CATEGORIAS_GASTO[0];
+  $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>Editar compra con tarjeta</h2><div class="modal-sub">Permite corregir descripción, categoría, monto y valor de cuota. Si cambiás el monto, se recalculan las cuotas existentes.</div><form id="editCompraForm"><div class="form-group"><label>Descripción</label><input name="descripcion" value="${escapeHtml(r.Descripción||'')}" required></div><div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r.Subcategoría||'')}</select></div></div><div class="form-row"><div class="form-group"><label>Importe total</label><input type="number" step="0.01" name="importe" value="${r.ImporteTotal||0}" required></div><div class="form-group"><label>Reintegro</label><input type="number" step="0.01" name="reintegro" value="${r.Reintegro||0}"></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
+  $('#editCompraForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); const total=Number(fd.importe||0), rein=Number(fd.reintegro||0), neto=total-rein, cuotasN=Number(r.Cuotas||1), valor=cuotasN?neto/cuotasN:neto; try{ const er=excelRowFromIndex('tarjetas',rowIndex); await patchCells(SHEETS.tarjetas,[['E'+er,fd.descripcion],['F'+er,fd.categoria],['G'+er,total],['H'+er,rein],['I'+er,neto],['K'+er,valor],['Q'+er,fd.notas||''],['R'+er,fd.subcategoria||'']]); for(const c of rows.cuotas.filter(x=>x.IDCompra===r.IDCompra)){ const cr=excelRowFromIndex('cuotas',c.__rowIndex); await patchCells(SHEETS.cuotas,[['D'+cr,fd.descripcion],['G'+cr,valor]]); } closeModal(); await loadAll(); }catch(e){showError('No se pudo editar compra: '+e.message);} });
+}
+async function deleteCompraTarjeta(rowIndex){ const r=rows.tarjetas.find(x=>x.__rowIndex===rowIndex); if(!r) return; if(!confirm('¿Eliminar/anular esta compra con tarjeta? Las cuotas asociadas se ponen en $0 para que deje de impactar en el dashboard.')) return; try{ const er=excelRowFromIndex('tarjetas',rowIndex); await patchCell(SHEETS.tarjetas,'O'+er,'ANULADA'); for(const c of rows.cuotas.filter(x=>x.IDCompra===r.IDCompra)){ const cr=excelRowFromIndex('cuotas',c.__rowIndex); await patchCell(SHEETS.cuotas,'G'+cr,0); } await loadAll(); }catch(e){showError('No se pudo eliminar compra: '+e.message);} }
+window.openCompraTarjetaEdit=openCompraTarjetaEdit; window.deleteCompraTarjeta=deleteCompraTarjeta;
 
 // ╔════════════════════════════════════════════════════════════════════════╗
 // ║ HELPERS — Tarjetas                                                     ║
