@@ -317,7 +317,7 @@ const SHEETS = {
 };
 const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
 const MES_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-const CATEGORIAS_GASTO = ['Auto','Servicios / Suscripciones','Alquiler','Almacen / Kiosco / Super','Restaurante / Delivery / Vianda','Fiestas / Bar / Boliche','Carnicería / Verdulería','Comida / Juntadas con amigos','Nafta auto','Gimnasio / Club / Deportes','Ropa','Electrónica / Electrodomésticos','Matrícula / Monotributo / Caja','Peluquería / Salud / Suplementos','Regalos','Limpieza','Viajes / Vacaciones','Inversiones / Ahorros','Pomelo','Otros'];
+const CATEGORIAS_GASTO = ['Auto','Servicios / Suscripciones','Alquiler','Almacen / Kiosco / Super','Restaurante / Delivery / Vianda','Fiestas / Bar / Boliche','Carnicería / Verdulería','Comida / Juntadas con amigos','Nafta auto','Gimnasio / Club / Deportes','Ropa','Electrónica / Electrodomésticos','Matrícula / Monotributo / Caja','Peluquería / Salud / Suplementos','Regalos','Limpieza','Viajes / Vacaciones','Inversiones / Ahorros','Pomelo','Tarjeta de crédito','Otros'];
 const CATEGORIAS_INGRESO = ['Sueldo Zavalla','Sueldo MATTFRA','Sueldo ARNOLD','Sueldo MUÑOZ','Sueldo SERVICIOS','Otros'];
 const MEDIOS_PAGO_NO_TC = ['Efectivo','Débito','Transferencia','MercadoPago','Sin especificar'];
 // Paleta de colores Honorarios para charts
@@ -470,8 +470,40 @@ async function readTable(name) {
     });
   return { headers, data, address: r.address };
 }
+function a1Parts(address) {
+  const a = (address || '').split('!').pop().replace(/'/g, '');
+  const [start, end] = a.split(':');
+  const cellRe = /([A-Z]+)(\d+)/i;
+  const s = start.match(cellRe); const e = (end || start).match(cellRe);
+  const colToNum = c => String(c).toUpperCase().split('').reduce((n,ch)=>n*26 + ch.charCodeAt(0)-64, 0);
+  const numToCol = n => { let out=''; while(n>0){ const r=(n-1)%26; out=String.fromCharCode(65+r)+out; n=Math.floor((n-1)/26); } return out; };
+  return {
+    startCol: s ? s[1].toUpperCase() : 'A', startRow: s ? Number(s[2]) : 1,
+    endCol: e ? e[1].toUpperCase() : 'A', endRow: e ? Number(e[2]) : 1,
+    startColNum: s ? colToNum(s[1]) : 1, endColNum: e ? colToNum(e[1]) : 1, numToCol
+  };
+}
+function tableKeyFromName(tableName) {
+  return Object.entries(TABLES).find(([,v]) => v === tableName)?.[0] || null;
+}
 async function addRow(tableName, values) {
-  await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, { method: 'POST', body: JSON.stringify({ values: [values] }) });
+  try {
+    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, { method: 'POST', body: JSON.stringify({ values: [values] }) });
+  } catch (e) {
+    // Fallback: algunos libros devueltos por Graph rechazan rows/add por rango interno.
+    // Se agranda la tabla una fila y se escribe el registro en esa fila.
+    const key = tableKeyFromName(tableName);
+    const sheet = key ? SHEETS[key] : null;
+    if (!sheet || !raw[key]?.address) throw e;
+    const parts = a1Parts(raw[key].address);
+    const cols = parts.endColNum - parts.startColNum + 1;
+    if (values.length !== cols) throw e;
+    const nextRow = parts.endRow + 1;
+    const newAddress = `${sheet}!${parts.startCol}${parts.startRow}:${parts.endCol}${nextRow}`;
+    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/resize`, { method: 'POST', body: JSON.stringify({ address: newAddress }) });
+    await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${parts.startCol}${nextRow}:${parts.endCol}${nextRow}')`, { method: 'PATCH', body: JSON.stringify({ values: [values] }) });
+    raw[key].address = newAddress;
+  }
 }
 async function patchCell(sheet, address, value) {
   await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${address}')`, { method: 'PATCH', body: JSON.stringify({ values: [[value]] }) });
@@ -675,29 +707,34 @@ function pagosFijosView(y, m) {
     const p = pagosMap[key];
     if (p) used.add(key);
     const isCard = tipoFijo(f) === 'TarjetaResumen';
-    const planilla = isCard ? tarjetaPlanilla(tarjetaRef(f), y, m) : Number((p ? p.MontoEstimado : f.MontoEstimado) || 0);
+    const tRef = tarjetaRef(f);
+    const resumen = isCard ? findResumenReal(y, m, tRef) : null;
+    const planilla = isCard ? tarjetaPlanilla(tRef, y, m) : Number((p ? p.MontoEstimado : f.MontoEstimado) || 0);
     const base = p || {
       __virtual: true,
       ID: null, Año: y, Mes: m,
       Concepto: f.Concepto,
       Categoría: f.Categoría || '',
       MontoEstimado: planilla,
-      MontoReal: '',
+      MontoReal: resumen ? Number(resumen.MontoReal || 0) : '',
       Moneda: f.Moneda || 'ARS',
       FechaVencimiento: vencimientoSerial(y, m, f.DíaVto),
-      Estado: 'Pendiente',
-      FechaPago: '',
-      MedioPago: f.MedioPago || '',
-      Notas: f.Notas || ''
+      Estado: resumen ? (resumen.EstadoPago || 'Pendiente') : 'Pendiente',
+      FechaPago: resumen ? (resumen.FechaPago || '') : '',
+      MedioPago: resumen ? (resumen.MedioPago || f.MedioPago || '') : (f.MedioPago || ''),
+      Notas: resumen ? (resumen.Notas || '') : (f.Notas || '')
     };
     out.push({
       ...base,
       __fromFijo: true,
       __fijoRowIndex: f.__rowIndex,
       __tipoFijo: tipoFijo(f),
-      __tarjetaRef: tarjetaRef(f),
+      __tarjetaRef: tRef,
       __activoFijo: String(f.Activo || '').toUpperCase() === 'SI',
-      MontoEstimado: planilla
+      __resumenRowIndex: resumen ? resumen.__rowIndex : null,
+      MontoEstimado: planilla,
+      MontoReal: isCard && resumen ? Number(resumen.MontoReal || 0) : base.MontoReal,
+      Estado: isCard && resumen ? (resumen.EstadoPago || 'Pendiente') : base.Estado
     });
   });
   rows.pagos.filter(p => Number(p.Año) === y && Number(p.Mes) === m).forEach(p => {
@@ -710,9 +747,10 @@ function resumenTarjetasMes(y, m) {
   const cards = cardNames(false);
   return cards.map(tarjeta => {
     const planilla = tarjetaPlanilla(tarjeta, y, m);
-    const pago = view.find(p => p.__tipoFijo === 'TarjetaResumen' && p.__tarjetaRef === tarjeta) ||
+    const resumen = findResumenReal(y, m, tarjeta);
+    const pago = resumen || view.find(p => p.__tipoFijo === 'TarjetaResumen' && p.__tarjetaRef === tarjeta) ||
                  view.find(p => fixedKey(p.Concepto) === fixedKey('Resumen ' + tarjeta));
-    const realRaw = pago ? Number(pago.MontoReal || 0) : 0;
+    const realRaw = pago ? Number((pago.MontoReal ?? 0) || 0) : 0;
     const hasReal = pago && pago.MontoReal !== '' && pago.MontoReal !== null && pago.MontoReal !== undefined && !isNaN(realRaw) && realRaw > 0;
     const delta = hasReal ? realRaw - planilla : 0;
     const pct = planilla ? Math.abs(delta) / planilla : (hasReal && realRaw ? 1 : 0);
@@ -737,6 +775,35 @@ function activeCards() {
 }
 function cardNames(activeOnly = true) {
   return (activeOnly ? activeCards() : allCardsFromConfig()).map(c => c.Tarjeta);
+}
+
+function findResumenReal(y, m, tarjeta) {
+  return (rows.resumenesTC || []).find(r => Number(r.Año) === Number(y) && Number(r.Mes) === Number(m) && fixedKey(r.Tarjeta) === fixedKey(tarjeta));
+}
+function resumenRowToExcelRow(rowIndex) {
+  return parseStartRow(raw.resumenesTC.address) + Number(rowIndex);
+}
+async function upsertResumenReal(tarjeta, y, m, monto, estado = 'Pendiente', fechaPago = '', medioPago = '', notas = '') {
+  const existing = findResumenReal(y, m, tarjeta);
+  if (existing) {
+    const r = resumenRowToExcelRow(existing.__rowIndex);
+    await patchCell(SHEETS.resumenesTC, 'E' + r, Number(monto || 0));
+    await patchCell(SHEETS.resumenesTC, 'F' + r, estado || 'Pendiente');
+    await patchCell(SHEETS.resumenesTC, 'G' + r, fechaPago || '');
+    await patchCell(SHEETS.resumenesTC, 'H' + r, medioPago || '');
+    await patchCell(SHEETS.resumenesTC, 'I' + r, notas || '');
+  } else {
+    await addRow(TABLES.resumenesTC, [nextId(rows.resumenesTC || []), Number(y), Number(m), tarjeta, Number(monto || 0), estado || 'Pendiente', fechaPago || '', medioPago || '', notas || '']);
+  }
+}
+async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas) {
+  const d = new Date(fechaInput + 'T00:00:00');
+  const txRow = [
+    nextId(rows.transacciones), dateToExcelSerial(fechaInput), 'Gasto', 'Tarjeta de crédito',
+    'Pago resumen ' + tarjeta, Number(monto || 0), 'ARS', medio || 'Transferencia', notas || '',
+    d.getMonth() + 1, d.getFullYear()
+  ];
+  await addRow(TABLES.transacciones, txRow);
 }
 function cardColor(name, idx = 0) {
   const c = allCardsFromConfig().find(x => x.Tarjeta === name);
@@ -973,7 +1040,7 @@ function renderPagosTab() {
       <td>${estado ? '<span class="badge badge-pagada">Pagado</span>' : '<span class="badge badge-pendiente">Pendiente</span>'}</td>
       <td>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" onclick="savePagoFromView(${i}, false)">Guardar</button>
+          ${isCard ? `<button class="btn btn-outline btn-sm" onclick="openResumenRealModal(decodeURIComponent('${encodeURIComponent(p.__tarjetaRef)}'))">${p.MontoReal ? 'Editar resumen real' : 'Cargar resumen real'}</button>` : `<button class="btn btn-outline btn-sm" onclick="savePagoFromView(${i}, false)">Guardar</button>`}
           ${estado
             ? `<button class="btn btn-danger btn-sm" onclick="savePagoFromView(${i}, false, 'Pendiente')">↩ Pendiente</button>`
             : `<button class="btn btn-success btn-sm" onclick="savePagoFromView(${i}, true)">✓ Pagado</button>`}
@@ -1137,7 +1204,7 @@ function renderTarjetasTab() {
       <div class="card-title">Control de resumen real vs planilla — ${MES_NAMES[m-1]} ${y}</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Tarjeta</th><th class="num">Resumen por planilla</th><th class="num">Monto resumen real</th><th class="num">Diferencia</th><th>Estado</th></tr></thead>
+          <thead><tr><th>Tarjeta</th><th class="num">Resumen por planilla</th><th class="num">Monto resumen real</th><th class="num">Diferencia</th><th>Estado</th><th>Acción</th></tr></thead>
           <tbody>
             ${resumenReal.map(r => `
               <tr style="${r.alerta ? 'background:var(--warm-light)' : ''}">
@@ -1146,6 +1213,7 @@ function renderTarjetasTab() {
                 <td class="num">${r.hasReal ? fmtARS(r.real) : '<span style="color:var(--text-muted)">Sin cargar</span>'}</td>
                 <td class="num">${r.hasReal ? fmtARS(r.delta) : '—'}</td>
                 <td>${r.alerta ? '<span class="badge badge-pendiente">Revisar gastos faltantes</span>' : '<span class="badge badge-pagada">OK</span>'}</td>
+                <td><button class="btn btn-outline btn-sm" onclick="openResumenRealModal(decodeURIComponent('${encodeURIComponent(r.tarjeta)}'))">${r.hasReal ? 'Editar real' : 'Cargar real'}</button></td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -1436,6 +1504,47 @@ function renderOtrosTab() {
 // ╚════════════════════════════════════════════════════════════════════════╝
 function closeModal() { $('#modalRoot').innerHTML = ''; }
 
+
+// ── MODAL: Cargar / editar resumen real de tarjeta ──
+function openResumenRealModal(tarjeta) {
+  const { y, m } = selMonth();
+  const existing = findResumenReal(y, m, tarjeta);
+  const planilla = tarjetaPlanilla(tarjeta, y, m);
+  const fechaTxt = existing?.FechaPago ? dateText(existing.FechaPago) : '';
+  $('#modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <h2>Resumen real — ${escapeHtml(tarjeta)}</h2>
+        <div class="modal-sub">${MES_NAMES[m-1]} ${y}. Por planilla figura ${fmtARS(planilla)}. Cargá el importe real que llegó en el resumen.</div>
+        <form id="resumenRealForm">
+          <div class="form-row">
+            <div class="form-group"><label>Monto resumen real</label><input type="number" name="monto" step="0.01" required value="${existing?.MontoReal || ''}"></div>
+            <div class="form-group"><label>Estado</label><select name="estado"><option value="Pendiente" ${String(existing?.EstadoPago||'Pendiente')!=='Pagado'?'selected':''}>Pendiente</option><option value="Pagado" ${String(existing?.EstadoPago||'')==='Pagado'?'selected':''}>Pagado</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Fecha de pago</label><input type="date" name="fecha" value="${todayInputValue()}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Si lo marcás como pagado, también se carga como egreso real.</div></div>
+            <div class="form-group"><label>Medio de pago</label><select name="medio">${MEDIOS_PAGO_NO_TC.map(o => `<option ${o === (existing?.MedioPago || 'Transferencia') ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          </div>
+          <div class="form-group"><label>Notas</label><input type="text" name="notas" value="${escapeHtml(existing?.Notas || '')}"></div>
+          <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button type="submit" class="btn btn-success">Guardar resumen</button></div>
+        </form>
+      </div>
+    </div>`;
+  $('#resumenRealForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = Object.fromEntries(new FormData(e.target));
+    const monto = Number(fd.monto || 0);
+    const estado = fd.estado || 'Pendiente';
+    const fechaPago = estado === 'Pagado' && fd.fecha ? dateToExcelSerial(fd.fecha) : '';
+    setStatus('Guardando resumen real…', 'wait');
+    try {
+      await upsertResumenReal(tarjeta, y, m, monto, estado, fechaPago, fd.medio || '', fd.notas || '');
+      if (estado === 'Pagado' && monto > 0) await addPagoTarjetaMovimiento(tarjeta, fd.fecha || todayInputValue(), monto, fd.medio || 'Transferencia', fd.notas || 'Pago desde resumen real');
+      closeModal(); await loadAll();
+    } catch (err) { showError('No se pudo guardar el resumen real: ' + err.message); setStatus('Error', 'err'); }
+  });
+}
+
 // ── MODAL: Cargar movimiento (paso 1: medio) ──
 function openTxModal() {
   $('#modalRoot').innerHTML = `
@@ -1501,13 +1610,17 @@ function openSimpleModal(kind, medioInicial) {
           </div>
           <div class="form-group">
             <label>Categoría</label>
-            <select name="categoria" required>
+            <select name="categoria" required onchange="toggleTxCardSelector(this.value)">
               ${cats.map(c => `<option>${c}</option>`).join('')}
             </select>
           </div>
+          <div class="form-group" id="txCardSelector" style="display:none">
+            <label>Tarjeta pagada</label>
+            <select name="tarjeta">${cardNames(false).map(c => `<option>${escapeHtml(c)}</option>`).join('')}</select>
+          </div>
           <div class="form-group">
             <label>Descripción</label>
-            <input type="text" name="descripcion" required placeholder="Ej: Verdulería, Sueldo Zavalla">
+            <input type="text" name="descripcion" placeholder="Ej: Verdulería, Pago resumen BBVA">
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -1534,14 +1647,18 @@ function openSimpleModal(kind, medioInicial) {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target));
     const d = new Date(fd.fecha + 'T00:00:00');
+    const desc = fd.descripcion || (fd.categoria === 'Tarjeta de crédito' && fd.tarjeta ? ('Pago resumen ' + fd.tarjeta) : '');
     const row = [
       nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria,
-      fd.descripcion, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '',
+      desc, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '',
       d.getMonth() + 1, d.getFullYear()
     ];
     setStatus('Guardando…', 'wait');
     try {
       await addRow(TABLES.transacciones, row);
+      if (kind === 'Gasto' && fd.categoria === 'Tarjeta de crédito' && fd.tarjeta) {
+        await upsertResumenReal(fd.tarjeta, d.getFullYear(), d.getMonth() + 1, Number(fd.importe), 'Pagado', dateToExcelSerial(fd.fecha), fd.medio || '', fd.notas || 'Cargado desde movimiento');
+      }
       closeModal(); await loadAll();
     } catch (err) { showError('No se pudo guardar: ' + err.message); setStatus('Error', 'err'); }
   });
@@ -1717,6 +1834,13 @@ window.savePagoFromView = async function(i, markPaid = false, forceEstado = null
 
   setStatus('Guardando pago…', 'wait');
   try {
+    if (p.__tipoFijo === 'TarjetaResumen') {
+      await upsertResumenReal(p.__tarjetaRef, Number(p.Año), Number(p.Mes), real, estado, fechaPago, medio, p.Notas || '');
+      if (markPaid && real > 0) await addPagoTarjetaMovimiento(p.__tarjetaRef, todayInputValue(), real, medio, 'Pago desde gastos fijos');
+      await loadAll();
+      return;
+    }
+
     if (p.__virtual) {
       const row = [
         nextId(rows.pagos), Number(p.Año), Number(p.Mes), p.Concepto, p.Categoría || '',
@@ -1734,7 +1858,6 @@ window.savePagoFromView = async function(i, markPaid = false, forceEstado = null
     }
 
     if (markPaid && real > 0) {
-      const alreadyAdded = String(p.Notas || '').includes('Auto-pago');
       const txRow = [
         nextId(rows.transacciones), dateToExcelSerial(todayInputValue()), 'Gasto',
         p.Categoría || 'Otros', p.Concepto, real, 'ARS', medio, 'Auto-pago desde gastos fijos',
@@ -2005,6 +2128,8 @@ window.openTxModal = openTxModal;
 window.openTcModal = openTcModal;
 window.openPagoModal = openPagoModal;
 window.openFijoModal = openFijoModal;
+window.openResumenRealModal = openResumenRealModal;
+window.toggleTxCardSelector = function(value) { const el = document.getElementById('txCardSelector'); if (el) el.style.display = value === 'Tarjeta de crédito' ? 'block' : 'none'; };
 window.openTarjetaModal = openTarjetaModal;
 window.closeModal = closeModal;
 
