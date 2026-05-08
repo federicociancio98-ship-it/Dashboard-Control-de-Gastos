@@ -490,7 +490,7 @@ const PDF_NAME_REGEX = /^([A-Z0-9]{2,24})_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|A
 
 // Paleta de colores Honorarios para charts
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
-const CARD_COLORS = { 'Santa Fe PAPA': '#6b8cae', 'Macro PAPA': '#c4a882', 'Macro FEDE': '#7aa68a', 'BBVA FEDE': '#9b86a8' };
+const CARD_COLORS = { 'Santa Fe PAPA': '#7aa68a', 'Macro PAPA': '#1f5fa8', 'Macro FEDE': '#1f5fa8', 'BBVA FEDE': '#49a6d8' };
 
 // ╔════════════════════════════════════════════════════════════════════════╗
 // ║ STATE                                                                   ║
@@ -731,14 +731,21 @@ async function saveGastosWorkbook() {
   if (!gastosWorkbook || !driveItem) return;
   const t = await getToken();
   const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
-  const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
+  const upload = async () => fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
     method: 'PUT',
     headers: {
       Authorization: 'Bearer ' + t,
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'If-Match': '*'
     },
     body: wbout
   });
+  let res = await upload();
+  if (!res.ok && (res.status === 409 || res.status === 412)) {
+    // OneDrive puede modificar el eTag entre lectura y escritura. Forzamos reemplazo y reintentamos.
+    driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
+    res = await upload();
+  }
   if (!res.ok) throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + await res.text());
   driveItem = await res.json();
 }
@@ -1583,6 +1590,25 @@ function renderAll() {
   renderTabContent();
 }
 
+function ahorroTransaccionesResumen() {
+  const arr = rows.transacciones.filter(r => r.Tipo === 'Gasto' && fixedKey(r.Categoría) === fixedKey('Ahorro / Inversiones'));
+  const ars = arr.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.Importe||0),0);
+  const usd = arr.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.Importe||0),0);
+  return { ars, usd, count: arr.length };
+}
+function deudaPendienteARS() {
+  return rows.deudas.filter(r => r.Tipo === 'Por cobrar' && !['cobrada','pagada','anulada'].includes(String(r.Estado||'').toLowerCase()) && String(r.Moneda||'ARS').toUpperCase()==='ARS').reduce((a,r)=>a+Number(r.Monto||0),0)
+       + rows.deudas.filter(r => r.Tipo === 'Por cobrar' && !['cobrada','pagada','anulada'].includes(String(r.Estado||'').toLowerCase()) && String(r.Moneda||'').toUpperCase()==='USD').reduce((a,r)=>a+Number(r.Monto||0)*Number(r.TipoCambio||0),0);
+}
+function totalPorCobrarHonorariosActual() {
+  const { y, m } = selMonth();
+  return sum(honorariosForMonth(y,m).porCobrar,'monto');
+}
+function cardBadge(name) {
+  const c = cardColor(name,0);
+  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${escapeHtml(name)}</span>`;
+}
+
 function isPagoTarjeta(r) {
   return fixedKey(r.Categoría) === fixedKey('Pago tarjeta de crédito') || String(r.Descripción || '').toLowerCase().startsWith('pago resumen ');
 }
@@ -1683,88 +1709,59 @@ function renderTabContent() {
 
 // ── TAB: RESUMEN ──────────────────────────────────────────────────────────
 function renderResumenTab() {
+  const { y, m, tx, cuotas } = selMonth();
+  const { porCobrar } = honorariosForMonth(y, m);
+  const ah = ahorroTransaccionesResumen();
+  const cards = cardNames(false);
+  const cardBoxes = cards.map((c,i) => {
+    const monto = sum(cuotas.filter(q => q.Tarjeta === c), 'MontoCuota');
+    const col = cardColor(c,i);
+    return `<div class="kpi" style="border-top:3px solid ${col}">
+      <div class="kpi-label">${escapeHtml(c)}</div>
+      <div class="kpi-value" style="color:${col}">${fmtARS(monto)}</div>
+      <div class="kpi-sub">a pagar en ${MES_NAMES[m-1]} ${y}</div>
+    </div>`;
+  }).join('');
   return `
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title">Flujo histórico (últimos 12 meses)</div>
-        <div class="chart-box tall"><canvas id="cashflowChart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-title">Composición del gasto del mes</div>
-        <div class="chart-box tall"><canvas id="summaryDonut"></canvas></div>
-      </div>
+    <div class="grid-3" style="margin-bottom:18px">
+      <div class="kpi sage"><div class="kpi-label">Ahorro USD registrado</div><div class="kpi-value sage">USD ${fmtNum(ah.usd)}</div><div class="kpi-sub">${ah.count} movimiento(s) de ahorro/inversión</div></div>
+      <div class="kpi slate"><div class="kpi-label">Ahorro ARS registrado</div><div class="kpi-value slate">${fmtARS(ah.ars)}</div><div class="kpi-sub">desde movimientos categorizados</div></div>
+      <div class="kpi warm"><div class="kpi-label">Pendiente por cobrar</div><div class="kpi-value warm">${fmtARS(sum(porCobrar,'monto'))}</div><div class="kpi-sub">${porCobrar.length} honorario(s) pendiente(s)</div></div>
     </div>
     <div class="grid-2">
       <div class="card">
-        <div class="card-title">Cuotas TC por tarjeta — mes actual</div>
-        <div class="chart-box short"><canvas id="tcResumenChart"></canvas></div>
+        <div class="card-title">Composición del gasto del mes</div>
+        <div class="chart-box"><canvas id="summaryDonut"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-title">Pendientes de cobro (Honorarios)</div>
+        <div class="card-title">Pendientes de cobro principales</div>
         <div id="pendCobroResumen"></div>
       </div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <div class="card-title">Tarjetas — a pagar este mes</div>
+      <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:0">${cardBoxes || '<p style="color:var(--text-muted);font-size:13px">Sin tarjetas configuradas.</p>'}</div>
     </div>`;
 }
 function drawResumenCharts() {
-  const { y, m, tx, cuotas } = selMonth();
-  // Histórico 12 meses
-  const keys = new Set();
-  rows.transacciones.forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
-  rows.cuotas.forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
-  facturas.forEach(f => { if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); });
-  const sorted = [...keys].filter(k => !k.includes('undefined')).sort().slice(-12);
-  const cobrSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto'); });
-  const otrosSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe'); });
-  const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r) && r.Año === yy && r.Mes === mm), 'Importe'); });
-  const cuotaSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.cuotas.filter(r => r.Año === yy && r.Mes === mm), 'MontoCuota'); });
-
-  charts.cf = new Chart(document.getElementById('cashflowChart'), {
-    type: 'bar',
-    data: {
-      labels: sorted.map(labelMonthKey),
-      datasets: [
-        { label: 'Cobrado honorarios', data: cobrSerie, backgroundColor: 'rgba(122,166,138,0.8)', borderRadius: 4, stack: 'in' },
-        { label: 'Otros ingresos',     data: otrosSerie, backgroundColor: 'rgba(107,140,174,0.8)', borderRadius: 4, stack: 'in' },
-        { label: 'Gastos directos',    data: gastoSerie.map(v => -v), backgroundColor: 'rgba(212,133,106,0.85)', borderRadius: 4, stack: 'out' },
-        { label: 'Cuotas TC',          data: cuotaSerie.map(v => -v), backgroundColor: 'rgba(155,134,168,0.85)', borderRadius: 4, stack: 'out' }
-      ]
-    },
-    options: { responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom', labels: { color: '#7a6f65', boxWidth: 12, font: { size: 11 } } } },
-      scales: {
-        x: { stacked: true, ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { color: '#e8e4dc' } },
-        y: { stacked: true, ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(Math.abs(v)) }, grid: { color: '#e8e4dc' } }
-      }
-    }
-  });
-  // Donut composición
+  const { y, m } = selMonth();
   const gs = groupSum(gastosCategorizadosDelMes(), 'Categoría', 'Importe').slice(0, 8);
-  charts.donut = new Chart(document.getElementById('summaryDonut'), {
-    type: 'doughnut',
-    data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
-      plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
-  });
-  // TC por tarjeta — mes seleccionado
-  const cards = cardNames(false);
-  charts.tc = new Chart(document.getElementById('tcResumenChart'), {
-    type: 'bar',
-    data: { labels: cards, datasets: [{ label: 'Cuota del mes', data: cards.map(c => sum(cuotas.filter(r => r.Tarjeta === c), 'MontoCuota')), backgroundColor: cards.map((c,i) => cardColor(c,i)), borderRadius: 6 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } }, y: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } } } }
-  });
-  // Pendientes de cobro
+  const donut = document.getElementById('summaryDonut');
+  if (donut) {
+    charts.donut = new Chart(donut, {
+      type: 'doughnut',
+      data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
+    });
+  }
   const { porCobrar } = honorariosForMonth(y, m);
-  $('#pendCobroResumen').innerHTML = porCobrar.length
-    ? porCobrar.slice(0, 8).map(f => `
-      <div class="pending-item">
-        <div>
-          <div class="pending-name">${escapeHtml(f.cliente)}</div>
-          <div class="pending-meta">${f.mesTxt} ${f.anioServicio} · ${escapeHtml(f.concepto)}</div>
-        </div>
-        <div class="pending-amount">${fmtARS(f.monto)}</div>
-      </div>`).join('')
-    : '<p style="font-size:13px;color:var(--text-muted);padding:18px 0">Sin pendientes 🎉</p>';
+  const el = document.getElementById('pendCobroResumen');
+  if (el) {
+    el.innerHTML = porCobrar.length
+      ? porCobrar.slice(0, 6).map(f => `<div class="pending-item"><div><div class="pending-name">${escapeHtml(f.cliente)}</div><div class="pending-meta">${f.mesTxt} ${f.anioServicio} · ${escapeHtml(f.concepto)}</div></div><div class="pending-amount">${fmtARS(f.monto)}</div></div>`).join('')
+      : '<p style="font-size:13px;color:var(--text-muted);padding:18px 0">Sin pendientes 🎉</p>';
+  }
 }
 
 // ── TAB: INGRESOS ────────────────────────────────────────────────────────
@@ -2047,143 +2044,56 @@ function renderPagosTab() {
 function renderTarjetasTab() {
   const { y, m, cuotas } = selMonth();
   const cardsAll = cardNames(false);
-  const cardsActive = cardNames(true);
   const resumenReal = resumenTarjetasMes(y, m).filter(r => cardsAll.includes(r.tarjeta));
-  const cuotasPorTarjeta = cardsAll.map(c => ({
+  const cuotasPorTarjeta = cardsAll.map((c,i) => ({
     tarjeta: c,
+    color: cardColor(c,i),
     monto: sum(cuotas.filter(r => r.Tarjeta === c), 'MontoCuota'),
     cuotas: cuotas.filter(r => r.Tarjeta === c).length,
-    pendiente: rows.tarjetas.filter(r => r.Tarjeta === c && Number(r.CuotasRestantes || 0) > 0)
-                  .reduce((a, r) => a + (Number(r.ValorCuota) * Number(r.CuotasRestantes)), 0)
+    pendiente: rows.tarjetas.filter(r => r.Tarjeta === c && Number(r.CuotasRestantes || 0) > 0).reduce((a, r) => a + (Number(r.ValorCuota) * Number(r.CuotasRestantes)), 0)
   }));
   const totalMes = cuotasPorTarjeta.reduce((a, x) => a + x.monto, 0);
   const totalPendiente = cuotasPorTarjeta.reduce((a, x) => a + x.pendiente, 0);
-  const terminando = cuotasTerminandoEn(y, m);
-  const pendiendoCompras = rows.tarjetas.filter(r => Number(r.CuotasRestantes || 0) > 0)
-    .sort((a, b) => Number(b.CuotasRestantes) - Number(a.CuotasRestantes));
-
+  const pendiendoCompras = rows.tarjetas.filter(r => Number(r.CuotasRestantes || 0) > 0).sort((a, b) => Number(a.CuotasRestantes || 999) - Number(b.CuotasRestantes || 999));
   return `
     <div class="grid-3" style="margin-bottom:18px">
-      <div class="kpi mauve">
-        <div class="kpi-label">A pagar por planilla</div>
-        <div class="kpi-value mauve">${fmtARS(totalMes)}</div>
-        <div class="kpi-sub">${cuotas.length} cuota(s) en ${cardsAll.length} tarjeta(s)</div>
-      </div>
-      <div class="kpi sand">
-        <div class="kpi-label">Total pendiente (todos los meses)</div>
-        <div class="kpi-value">${fmtARS(totalPendiente)}</div>
-        <div class="kpi-sub">${pendiendoCompras.length} compra(s) en cuotas</div>
-      </div>
-      <div class="kpi sage">
-        <div class="kpi-label">Resumen real cargado</div>
-        <div class="kpi-value sage">${fmtARS(resumenReal.reduce((a,r)=>a+(r.hasReal?r.real:0),0))}</div>
-        <div class="kpi-sub">${resumenReal.filter(r=>r.hasReal).length} tarjeta(s) con resumen real</div>
-      </div>
+      <div class="kpi mauve"><div class="kpi-label">A pagar por planilla</div><div class="kpi-value mauve">${fmtARS(totalMes)}</div><div class="kpi-sub">${cuotas.length} cuota(s) en ${cardsAll.length} tarjeta(s)</div></div>
+      <div class="kpi sand"><div class="kpi-label">Total pendiente</div><div class="kpi-value">${fmtARS(totalPendiente)}</div><div class="kpi-sub">${pendiendoCompras.length} compra(s) en cuotas</div></div>
+      <div class="kpi sage"><div class="kpi-label">Resumen real cargado</div><div class="kpi-value sage">${fmtARS(resumenReal.reduce((a,r)=>a+(r.hasReal?r.real:0),0))}</div><div class="kpi-sub">${resumenReal.filter(r=>r.hasReal).length} tarjeta(s) con resumen real</div></div>
     </div>
-
     <div class="card" style="margin-bottom:18px">
-      <div class="section-header">
-        <div>
-          <div class="card-title" style="margin-bottom:4px">Tarjetas configuradas</div>
-          <div style="font-size:12px;color:var(--text-muted)">Alta, edición de datos y desactivación. Desactivar una tarjeta no borra compras ni cuotas históricas.</div>
-        </div>
-        <button class="btn btn-outline btn-sm" onclick="openTarjetaModal()">+ Agregar tarjeta</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Tarjeta</th><th>Banco</th><th>Titular</th><th>Vto.</th><th class="num">Límite</th><th>Estado</th><th>Acción</th></tr></thead>
-          <tbody>
-            ${allCardsFromConfig().map(c => {
-              const active = String(c.Activa || 'SI').toUpperCase() === 'SI';
-              return `<tr>
-                <td><strong>${escapeHtml(c.Tarjeta)}</strong></td>
-                <td>${escapeHtml(c.Banco || '')}</td>
-                <td>${escapeHtml(c.Titular || '')}</td>
-                <td>${c.DiaVencimiento || ''}</td>
-                <td class="num">${c.Limite ? fmtARS(c.Limite) : '<span style="color:var(--text-muted)">—</span>'}</td>
-                <td>${active ? '<span class="badge badge-pagada">Activa</span>' : '<span class="badge badge-anulada">Inactiva</span>'}</td>
-                <td><div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button class="btn btn-outline btn-sm" onclick="openTarjetaModal(${c.__rowIndex})">Editar</button>
-                  ${active ? `<button class="btn btn-danger btn-sm" onclick="toggleTarjetaActiva(${c.__rowIndex}, 'NO')">Desactivar</button>` : `<button class="btn btn-success btn-sm" onclick="toggleTarjetaActiva(${c.__rowIndex}, 'SI')">Reactivar</button>`}
-                </div></td>
-              </tr>`;
-            }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin tarjetas configuradas.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
+      <div class="card-title">Monto a pagar por tarjeta — ${MES_NAMES[m-1]} ${y}</div>
+      <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:0">${cuotasPorTarjeta.map(c=>`<div class="kpi" style="border-top:3px solid ${c.color}"><div class="kpi-label">${escapeHtml(c.tarjeta)}</div><div class="kpi-value" style="color:${c.color}">${fmtARS(c.monto)}</div><div class="kpi-sub">${c.cuotas} cuota(s)</div></div>`).join('')}</div>
     </div>
-
     <div class="card" style="margin-bottom:18px">
       <div class="card-title">Control de resumen real vs planilla — ${MES_NAMES[m-1]} ${y}</div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Tarjeta</th><th class="num">Resumen por planilla</th><th class="num">Monto resumen real</th><th class="num">Diferencia</th><th>Estado</th><th>Acción</th></tr></thead>
-          <tbody>
-            ${resumenReal.map(r => `
-              <tr style="${r.alerta ? 'background:var(--warm-light)' : ''}">
-                <td><strong>${escapeHtml(r.tarjeta)}</strong></td>
-                <td class="num">${fmtARS(r.planilla)}</td>
-                <td class="num">${r.hasReal ? fmtARS(r.real) : '<span style="color:var(--text-muted)">Sin cargar</span>'}</td>
-                <td class="num">${r.hasReal ? fmtARS(r.delta) : '—'}</td>
-                <td>${r.alerta ? '<span class="badge badge-pendiente">Revisar gastos faltantes</span>' : '<span class="badge badge-pagada">OK</span>'}</td>
-                <td><button class="btn btn-outline btn-sm" onclick="openResumenRealModal(decodeURIComponent('${encodeURIComponent(r.tarjeta)}'))">${r.hasReal ? 'Editar real' : 'Cargar real'}</button></td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:18px">
-      <div class="card-title">Evolución de cuotas (próximos 12 meses)</div>
-      <div class="chart-box tall"><canvas id="cardsLine"></canvas></div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title">A pagar — ${MES_NAMES[m-1]} ${y}</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Tarjeta</th><th>Descripción</th><th>Cuota</th><th class="num">Monto</th></tr></thead>
-            <tbody>
-              ${cuotas.length ? cuotas.sort((a,b)=>Number(b.MontoCuota)-Number(a.MontoCuota)).map(r => `
-                <tr>
-                  <td><span class="badge badge-mauve">${escapeHtml(r.Tarjeta)}</span></td>
-                  <td>${escapeHtml(r.Descripción)}</td>
-                  <td>${r.NroCuota || ''}/${r.TotalCuotas || ''}</td>
-                  <td class="num">${fmtARS(r.MontoCuota)}</td>
-                </tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas en este mes.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Compras con cuotas pendientes</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Tarjeta</th><th>Descripción</th><th>Cuotas rest.</th><th class="num">Valor cuota</th><th>Termina</th></tr></thead>
-            <tbody>
-              ${pendiendoCompras.slice(0, 30).map(r => {
-                const fin = excelDateToDate(r.MesFinPago);
-                const isTerminando = fin && fin.getFullYear() === y && (fin.getMonth() + 1) === m;
-                return `<tr style="${isTerminando ? 'background:var(--sage-light)' : ''}">
-                  <td><span class="badge badge-mauve">${escapeHtml(r.Tarjeta)}</span></td>
-                  <td>${escapeHtml(r.Descripción)}</td>
-                  <td>${r.CuotasRestantes}/${r.Cuotas}</td>
-                  <td class="num">${fmtARS(r.ValorCuota)}</td>
-                  <td>${dateText(r.MesFinPago)}${isTerminando ? ' 🎉' : ''}</td>
-                </tr>`;
-              }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas pendientes 🎉</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-    <details class="card" style="margin-top:18px" open>
-      <summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Detalle editable de compras con tarjeta</summary>
-      <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Tarjeta</th><th>Descripción</th><th>Categoría</th><th class="num">Importe neto</th><th>Cuotas</th><th>Acción</th></tr></thead><tbody>
-        ${rows.tarjetas.filter(r=>String(r.Estado||'').toUpperCase()!=='ANULADA').sort((a,b)=>(excelDateToDate(b.Fecha)?.getTime()||0)-(excelDateToDate(a.Fecha)?.getTime()||0)).slice(0,80).map(r=>`<tr><td>${dateText(r.Fecha)}</td><td>${escapeHtml(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${escapeHtml(r.Categoría||'')}</td><td class="num">${fmtARS(r.ImporteNeto||r.ImporteTotal)}</td><td>${r.Cuotas||''}</td><td><button class="btn btn-outline btn-sm" onclick="openCompraTarjetaEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteCompraTarjeta(${r.__rowIndex})">Eliminar</button></td></tr>`).join('')}
+      <div class="table-wrap"><table><thead><tr><th>Tarjeta</th><th class="num">Resumen por planilla</th><th class="num">Monto resumen real</th><th class="num">Diferencia</th><th>Estado</th><th>Acción</th></tr></thead><tbody>
+        ${resumenReal.map((r,i) => { const warn = r.hasReal && r.planilla > 0 && Math.abs(r.delta) > r.planilla * 0.05; return `<tr style="${warn?'background:var(--warm-light)':''}"><td>${cardBadge(r.tarjeta)}</td><td class="num">${fmtARS(r.planilla)}</td><td class="num">${r.hasReal ? fmtARS(r.real) : '<span style="color:var(--text-muted)">Sin cargar</span>'}</td><td class="num">${r.hasReal ? fmtARS(r.delta) : '—'}</td><td>${warn?'<span class="badge badge-pendiente">Revisar gastos faltantes</span>':'<span class="badge badge-pagada">OK</span>'}</td><td><button class="btn btn-outline btn-sm" onclick="openResumenRealModal('${escapeHtml(r.tarjeta)}')">${r.hasReal?'Editar real':'Cargar real'}</button></td></tr>`; }).join('')}
       </tbody></table></div>
-    </details>`;
+    </div>
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-title">Evolución de cuotas por tarjeta</div>
+      <div class="chart-box"><canvas id="cardsLine"></canvas></div>
+    </div>
+    <div class="grid-2">
+      <div class="card"><div class="card-title">A pagar — ${MES_NAMES[m-1]} ${y}</div><div class="table-wrap"><table><thead><tr><th>Tarjeta</th><th>Descripción</th><th>Cuota</th><th class="num">Monto</th></tr></thead><tbody>
+        ${cuotas.length ? cuotas.sort((a,b)=>Number(b.MontoCuota)-Number(a.MontoCuota)).map(r => `<tr><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${r.NroCuota || ''}/${r.TotalCuotas || ''}</td><td class="num">${fmtARS(r.MontoCuota)}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas en este mes.</td></tr>'}
+      </tbody></table></div></div>
+      <div class="card"><div class="card-title">Compras con cuotas pendientes</div><div class="table-wrap"><table><thead><tr><th>Tarjeta</th><th>Descripción</th><th>Cuotas rest.</th><th class="num">Valor cuota</th><th>Termina</th></tr></thead><tbody>
+        ${pendiendoCompras.slice(0, 40).map(r => { const fin = excelDateToDate(r.MesFinPago); const isTerminando = fin && fin.getFullYear() === y && (fin.getMonth() + 1) === m; return `<tr style="${isTerminando ? 'background:var(--sage-light)' : ''}"><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${r.CuotasRestantes}/${r.Cuotas}</td><td class="num">${fmtARS(r.ValorCuota)}</td><td>${dateText(r.MesFinPago)}${isTerminando ? ' 🎉' : ''}</td></tr>`; }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas pendientes 🎉</td></tr>'}
+      </tbody></table></div></div>
+    </div>
+    <details class="card" style="margin-top:18px"><summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Detalle editable de compras con tarjeta</summary>
+      <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Tarjeta</th><th>Descripción</th><th>Categoría</th><th class="num">Importe neto</th><th>Cuotas</th><th>Acción</th></tr></thead><tbody>
+        ${rows.tarjetas.filter(r=>String(r.Estado||'').toUpperCase()!=='ANULADA').sort((a,b)=>(excelDateToDate(b.Fecha)?.getTime()||0)-(excelDateToDate(a.Fecha)?.getTime()||0)).slice(0,100).map(r=>`<tr><td>${dateText(r.Fecha)}</td><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${escapeHtml(r.Categoría||'')} · ${escapeHtml(r.Subcategoría||'')}</td><td class="num">${fmtARS(r.ImporteNeto||r.ImporteTotal)}</td><td>${r.Cuotas||''}</td><td><button class="btn btn-outline btn-sm" onclick="openCompraTarjetaEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteCompraTarjeta(${r.__rowIndex})">Eliminar</button></td></tr>`).join('')}
+      </tbody></table></div>
+    </details>
+    <div class="card" style="margin-top:18px">
+      <div class="section-header"><div><div class="card-title" style="margin-bottom:4px">Tarjetas configuradas</div><div style="font-size:12px;color:var(--text-muted)">Alta, edición y desactivación. Desactivar no borra historial.</div></div><button class="btn btn-outline btn-sm" onclick="openTarjetaModal()">+ Agregar tarjeta</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Tarjeta</th><th>Banco</th><th>Titular</th><th>Vto.</th><th class="num">Límite</th><th>Estado</th><th>Acción</th></tr></thead><tbody>
+        ${allCardsFromConfig().map(c => { const active = String(c.Activa || 'SI').toUpperCase() === 'SI'; return `<tr><td>${cardBadge(c.Tarjeta)}</td><td>${escapeHtml(c.Banco || '')}</td><td>${escapeHtml(c.Titular || '')}</td><td>${c.DiaVencimiento || ''}</td><td class="num">${c.Limite ? fmtARS(c.Limite) : '<span style="color:var(--text-muted)">—</span>'}</td><td>${active ? '<span class="badge badge-pagada">Activa</span>' : '<span class="badge badge-anulada">Inactiva</span>'}</td><td><button class="btn btn-outline btn-sm" onclick="openTarjetaModal(${c.__rowIndex})">Editar</button> ${active ? `<button class="btn btn-danger btn-sm" onclick="toggleTarjetaActiva(${c.__rowIndex}, 'NO')">Desactivar</button>` : `<button class="btn btn-success btn-sm" onclick="toggleTarjetaActiva(${c.__rowIndex}, 'SI')">Reactivar</button>`}</td></tr>`; }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin tarjetas configuradas.</td></tr>'}
+      </tbody></table></div>
+    </div>`;
 }
 function drawTarjetasCharts() {
   const today = new Date();
@@ -2372,17 +2282,19 @@ function renderMovimientosTab() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Subcategoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead>
           <tbody>
             ${sorted.length ? sorted.map(r => `
               <tr>
                 <td>${dateText(r.Fecha)}</td>
                 <td>${r.Tipo === 'Ingreso' ? '<span class="badge badge-pagada">Ingreso</span>' : '<span class="badge badge-pendiente">Gasto</span>'}</td>
                 <td>${escapeHtml(r.Categoría || '')}</td>
+                <td>${escapeHtml(r.Subcategoría || '')}</td>
                 <td>${escapeHtml(r.Descripción || '')}</td>
                 <td>${escapeHtml(r.MedioPago || '')}</td>
-                <td class="num" style="color:${r.Tipo==='Ingreso'?'var(--sage)':'var(--warm)'};font-weight:600">${fmtARS(r.Importe)}</td>
-              </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px">Sin movimientos este mes.</td></tr>'}
+                <td class="num" style="color:${r.Tipo==='Ingreso'?'var(--sage)':'var(--warm)'};font-weight:600">${fmtMoney(r.Importe, r.Moneda)}</td>
+                <td><button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button></td>
+              </tr>`).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">Sin movimientos este mes.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -2391,6 +2303,7 @@ function renderMovimientosTab() {
 
 // ── TAB: OTROS (DEUDAS / INVERSIONES / AHORRO) ───────────────────────────
 function renderOtrosTab() {
+  const ah = ahorroTransaccionesResumen();
   const deudasActivas = rows.deudas.filter(r => String(r.Estado || '').toLowerCase() !== 'pagada' && String(r.Estado || '').toLowerCase() !== 'cobrada' && String(r.Estado || '').toLowerCase() !== 'anulada');
   const pagar  = deudasActivas.filter(r => r.Tipo === 'Por pagar');
   const cobrar = deudasActivas.filter(r => r.Tipo === 'Por cobrar');
@@ -2398,6 +2311,11 @@ function renderOtrosTab() {
   const totalInv = sum(invActivas, 'TenenciaARS');
   const gainInv = sum(invActivas, 'GananciaARS');
   return `
+    <div class="grid-3" style="margin-bottom:18px">
+      <div class="kpi sage"><div class="kpi-label">Ahorro en USD</div><div class="kpi-value sage">USD ${fmtNum(ah.usd)}</div><div class="kpi-sub">movimientos categorizados como ahorro/inversión</div></div>
+      <div class="kpi slate"><div class="kpi-label">Ahorro en ARS</div><div class="kpi-value slate">${fmtARS(ah.ars)}</div><div class="kpi-sub">no incluye metas sin movimiento</div></div>
+      <div class="kpi sand"><div class="kpi-label">Inversiones activas</div><div class="kpi-value">${fmtARS(totalInv)}</div><div class="kpi-sub">tenencia estimada</div></div>
+    </div>
     <div class="grid-2" style="margin-bottom:18px">
       <div class="card"><div class="section-header"><h3>Deudas — Por pagar</h3><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por pagar')">+ Agregar</button></div>
         ${pagar.length ? pagar.map(r => `<div class="pending-item"><div><div class="pending-name">${escapeHtml(r.Contraparte)}</div><div class="pending-meta">${escapeHtml(r.Notas || '')} · ${escapeHtml(r.Categoría || '')}${r.Subcategoría ? ' / ' + escapeHtml(r.Subcategoría) : ''}</div></div><div style="display:flex;align-items:center;gap:8px"><div class="pending-amount">${fmtMoney(r.Monto, r.Moneda)}</div><button class="btn btn-success btn-sm" onclick="openSettleDebtModal(${r.__rowIndex})">Pagar</button><button class="btn btn-outline btn-sm" onclick="openDeudaModal('Por pagar', ${r.__rowIndex})">Editar</button></div></div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin deudas por pagar 🎉</p>'}
@@ -2422,7 +2340,15 @@ function renderOtrosTab() {
 // ╚════════════════════════════════════════════════════════════════════════╝
 function closeModal() { $('#modalRoot').innerHTML = ''; }
 
-async function patchCells(sheet, updates) { for (const [addr,val] of updates) await patchCell(sheet, addr, val); }
+async function patchCells(sheet, updates) {
+  const key = keyFromSheetName(sheet);
+  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
+  for (const [addr, val] of updates) {
+    const parts = a1Parts(addr);
+    setCell(ws, parts.startRow, parts.startColNum, val);
+  }
+  await saveGastosWorkbook();
+}
 function excelRowFromIndex(key, rowIndex) { return parseStartRow(raw[key].address) + Number(rowIndex); }
 async function addAporteToMeta(rowIndex, monto, fechaInput) {
   const r = rows.ahorro.find(x => Number(x.__rowIndex) === Number(rowIndex)); if (!r) return;
@@ -2542,6 +2468,42 @@ window.updateSubcatSelect = function(sel) {
   if (cardBox) cardBox.style.display = cat === 'Pago tarjeta de crédito' ? 'block' : 'none';
   if (ahorroBox) ahorroBox.style.display = cat === 'Ahorro / Inversiones' ? 'block' : 'none';
 };
+
+
+function openMovimientoEdit(rowIndex) {
+  const r = rows.transacciones.find(x => x.__rowIndex === rowIndex);
+  if (!r) return;
+  const cat = r.Categoría || CATEGORIAS_GASTO[0];
+  $('#modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal">
+      <h2>Editar movimiento</h2>
+      <form id="movEditForm">
+        <div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${excelDateToDate(r.Fecha)?excelDateToDate(r.Fecha).toISOString().slice(0,10):todayInputValue()}"></div><div class="form-group"><label>Tipo</label><select name="tipo"><option ${r.Tipo==='Gasto'?'selected':''}>Gasto</option><option ${r.Tipo==='Ingreso'?'selected':''}>Ingreso</option></select></div></div>
+        <div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r.Subcategoría||'')}</select></div></div>
+        <div class="form-group"><label>Descripción</label><input name="descripcion" value="${escapeHtml(r.Descripción||'')}"></div>
+        <div class="form-row"><div class="form-group"><label>Importe</label><input type="number" step="0.01" name="importe" value="${r.Importe||0}"></div><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r.Moneda==='ARS'?'selected':''}>ARS</option><option ${r.Moneda==='USD'?'selected':''}>USD</option></select></div></div>
+        <div class="form-row"><div class="form-group"><label>Medio</label><select name="medio">${[...MEDIOS_PAGO_NO_TC,'Tarjeta de crédito'].map(m=>`<option ${m===r.MedioPago?'selected':''}>${m}</option>`).join('')}</select></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r.Notas||'')}"></div></div>
+        <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div>
+      </form></div></div>`;
+  $('#movEditForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    const d = new Date((fd.fecha||todayInputValue())+'T00:00:00');
+    const er = excelRowFromIndex('transacciones', rowIndex);
+    try {
+      await patchCells(SHEETS.transacciones, [['B'+er,dateToExcelSerial(fd.fecha||todayInputValue())],['C'+er,fd.tipo],['D'+er,fd.categoria],['E'+er,fd.descripcion||''],['F'+er,Number(fd.importe||0)],['G'+er,fd.moneda],['H'+er,fd.medio],['I'+er,fd.notas||''],['J'+er,d.getMonth()+1],['K'+er,d.getFullYear()],['L'+er,fd.subcategoria||'']]);
+      closeModal(); await loadAll();
+    } catch(e) { showError('No se pudo editar movimiento: '+e.message); }
+  });
+}
+async function deleteMovimiento(rowIndex) {
+  if (!confirm('¿Eliminar este movimiento? Se marcará como anulado y dejará de impactar.')) return;
+  const er = excelRowFromIndex('transacciones', rowIndex);
+  try {
+    await patchCells(SHEETS.transacciones, [['C'+er,'Anulado'],['I'+er,'Movimiento anulado desde dashboard']]);
+    await loadAll();
+  } catch(e) { showError('No se pudo eliminar movimiento: '+e.message); }
+}
 
 // ── MODAL: Cargar movimiento (paso 1: medio) ──
 function openTxModal() {
