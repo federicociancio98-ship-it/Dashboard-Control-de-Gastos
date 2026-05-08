@@ -32,6 +32,7 @@
     })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet" />
 
@@ -605,7 +606,9 @@ async function getToken() {
 }
 
 // ╔════════════════════════════════════════════════════════════════════════╗
-// ║ GRAPH                                                                   ║
+// ║ GRAPH + EXCEL GASTOS FILE MODE                                         ║
+// ║ Nota: el Excel de gastos se lee/escribe como archivo XLSX binario.       ║
+// ║ Esto evita el error Microsoft Graph workbook unsupportedWorkbook.        ║
 // ╚════════════════════════════════════════════════════════════════════════╝
 async function gFetch(path, options = {}) {
   const t = await getToken();
@@ -618,30 +621,83 @@ async function gFetch(path, options = {}) {
   if (res.status === 204) return null;
   return res.json();
 }
-async function openWorkbook() {
-  // Importante: no reutilizar el workbook-session-id anterior al crear una nueva sesión.
-  // Microsoft Graph puede devolver BadRequest/malformed si /createSession recibe una sesión vieja.
-  sessionId = null;
-  driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
-  const s = await gFetch(`/me/drive/items/${driveItem.id}/workbook/createSession`, { method: 'POST', body: JSON.stringify({ persistChanges: true }) });
-  sessionId = s.id;
+
+let gastosWorkbook = null;
+
+const EXPECTED_HEADERS = {
+  transacciones: ['ID','Fecha','Tipo','Categoría','Descripción','Importe','Moneda','MedioPago','Notas','Mes','Año','Subcategoría'],
+  tarjetas: ['ID','IDCompra','Fecha','Tarjeta','Descripción','Categoría','ImporteTotal','Reintegro','ImporteNeto','Cuotas','ValorCuota','MesInicioPago','MesFinPago','CuotasRestantes','Estado','Moneda','Notas','Subcategoría'],
+  cuotas: ['ID','IDCompra','Tarjeta','Descripción','NroCuota','TotalCuotas','MontoCuota','MesPago','Moneda','Mes','Año'],
+  deudas: ['ID','Tipo','Contraparte','Monto','Moneda','FechaOrigen','FechaVencimiento','Estado','Notas','Categoría','Subcategoría','FechaPagoCobro','MedioPagoCobro','TipoCambio','MontoARSComputado'],
+  inversiones: ['ID','FechaRegistro','Plazo','TipoActivo','Ticker','Cantidad','PPC','PrecioActual','GananciaARS','TenenciaARS','Moneda','Notas','Estado','Dólar Blue'],
+  ahorro: ['ID','Meta','Moneda','MontoObjetivo','FechaObjetivo','FechaAporte','MontoAporte','Estado','Notas','MontoActual','Activa'],
+  fijos: ['ID','Concepto','Categoría','MontoEstimado','Moneda','DíaVto','MedioPago','Activo','TipoGastoFijo','TarjetaRef','Notas','Subcategoría'],
+  pagos: ['ID','Año','Mes','Concepto','Categoría','MontoEstimado','MontoReal','Moneda','FechaVencimiento','Estado','FechaPago','MedioPago','Notas','Subcategoría'],
+  tarjetasConfig: ['ID','Tarjeta','Banco','Titular','DiaCierre','DiaVencimiento','Limite','Activa','Color','Notas'],
+  resumenesTC: ['ID','Año','Mes','Tarjeta','MontoReal','EstadoPago','FechaPago','MedioPago','Notas'],
+  origenesIngresos: ['IDOrigen','CategoriaIngreso','NombreOrigen','CUIT','Recurrente','Activo','AuditarPDF','CarpetaPDF','PrefijoPDF','Notas'],
+};
+
+function keyFromSheetName(sheetName) {
+  return Object.entries(SHEETS).find(([,v]) => v === sheetName)?.[0] || null;
 }
-async function readTable(name) {
-  const r = await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(name)}/range?$select=address,values`);
-  const values = r.values || [];
-  const headers = values[0] || [];
-  // Mantener el índice ORIGINAL de cada fila para que las escrituras (patchCell)
-  // apunten a la fila correcta del Excel aún si hay filas vacías intercaladas.
-  const data = values.slice(1)
-    .map((row, i) => ({ row, originalIdx: i + 1 }))
-    .filter(({ row }) => row.some(x => x !== null && x !== ''))
-    .map(({ row, originalIdx }) => {
-      const o = { __rowIndex: originalIdx, __address: r.address };
-      headers.forEach((h, j) => o[h] = row[j]);
-      return o;
-    });
-  return { headers, data, address: r.address };
+
+function tableKeyFromName(tableName) {
+  return Object.entries(TABLES).find(([,v]) => v === tableName)?.[0] || null;
 }
+
+function aoaIsEmptyRow(row) {
+  return !row || row.every(v => v === null || v === undefined || v === '');
+}
+
+function ensureSheetForKey(key) {
+  const sheetName = SHEETS[key];
+  if (!sheetName) throw new Error('No existe hoja configurada para ' + key);
+  if (!gastosWorkbook.Sheets[sheetName]) {
+    gastosWorkbook.SheetNames.push(sheetName);
+    const headers = EXPECTED_HEADERS[key] || [];
+    gastosWorkbook.Sheets[sheetName] = XLSX.utils.aoa_to_sheet([headers]);
+  }
+  const ws = gastosWorkbook.Sheets[sheetName];
+  const headers = EXPECTED_HEADERS[key] || [];
+  const existing = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
+  const first = existing[0] || [];
+  const missingHeader = !first.length || headers.some((h,i)=>String(first[i]||'') !== h);
+  if (missingHeader && headers.length) {
+    XLSX.utils.sheet_add_aoa(ws, [headers], {origin:'A1'});
+  }
+  return ws;
+}
+
+function sheetAoa(sheetName) {
+  const ws = gastosWorkbook.Sheets[sheetName];
+  if (!ws) return [];
+  return XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
+}
+
+function updateRef(ws, r, c) {
+  const old = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : {s:{r:0,c:0}, e:{r:0,c:0}};
+  old.s.r = Math.min(old.s.r, 0);
+  old.s.c = Math.min(old.s.c, 0);
+  old.e.r = Math.max(old.e.r, r);
+  old.e.c = Math.max(old.e.c, c);
+  ws['!ref'] = XLSX.utils.encode_range(old);
+}
+
+function setCell(ws, row1, col1, value) {
+  const addr = XLSX.utils.encode_cell({r: row1-1, c: col1-1});
+  if (value === null || value === undefined || value === '') {
+    ws[addr] = {t:'s', v:''};
+  } else if (typeof value === 'number' && isFinite(value)) {
+    ws[addr] = {t:'n', v:value};
+  } else if (typeof value === 'boolean') {
+    ws[addr] = {t:'b', v:value};
+  } else {
+    ws[addr] = {t:'s', v:String(value)};
+  }
+  updateRef(ws, row1-1, col1-1);
+}
+
 function a1Parts(address) {
   const a = (address || '').split('!').pop().replace(/'/g, '');
   const [start, end] = a.split(':');
@@ -655,59 +711,123 @@ function a1Parts(address) {
     startColNum: s ? colToNum(s[1]) : 1, endColNum: e ? colToNum(e[1]) : 1, numToCol
   };
 }
-function tableKeyFromName(tableName) {
-  return Object.entries(TABLES).find(([,v]) => v === tableName)?.[0] || null;
-}
-async function patchRange(sheet, address, values2d) {
-  const encAddr = encodeURIComponent(address);
-  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${encAddr}')`, {
-    method: 'PATCH', body: JSON.stringify({ values: values2d })
+
+async function openWorkbook() {
+  sessionId = null; // El Excel de gastos ya no usa workbook sessions.
+  if (!window.XLSX) throw new Error('No se cargó la librería XLSX. Refrescá la página.');
+  driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
+  const t = await getToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
+    headers: { Authorization: 'Bearer ' + t }
   });
+  if (!res.ok) throw new Error('No se pudo descargar el Excel de gastos: ' + res.status + ' ' + await res.text());
+  const ab = await res.arrayBuffer();
+  gastosWorkbook = XLSX.read(ab, {type:'array', cellDates:false});
+  // Asegurar hojas mínimas. No depende de la API /workbook de Graph.
+  Object.keys(SHEETS).forEach(k => { if (EXPECTED_HEADERS[k]) ensureSheetForKey(k); });
 }
-async function addRow(tableName, values) {
-  const key0 = tableKeyFromName(tableName);
-  if (key0 && raw[key0]?.address) {
-    const p0 = a1Parts(raw[key0].address);
-    const expected = p0.endColNum - p0.startColNum + 1;
-    if (values.length < expected) values = values.concat(Array(expected - values.length).fill(''));
-    if (values.length > expected) values = values.slice(0, expected);
+
+async function saveGastosWorkbook() {
+  if (!gastosWorkbook || !driveItem) return;
+  const t = await getToken();
+  const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
+  const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
+    method: 'PUT',
+    headers: {
+      Authorization: 'Bearer ' + t,
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    },
+    body: wbout
+  });
+  if (!res.ok) throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + await res.text());
+  driveItem = await res.json();
+}
+
+async function readTable(name) {
+  const key = tableKeyFromName(name);
+  if (!key) return { headers: [], data: [], address: '' };
+  const sheetName = SHEETS[key];
+  const ws = ensureSheetForKey(key);
+  const aoa = sheetAoa(sheetName);
+  const fallbackHeaders = EXPECTED_HEADERS[key] || [];
+  let headers = (aoa[0] || []).map(h => String(h || '').trim());
+  if (!headers.filter(Boolean).length) {
+    headers = fallbackHeaders;
+    XLSX.utils.sheet_add_aoa(ws, [headers], {origin:'A1'});
   }
-  try {
-    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, { method: 'POST', body: JSON.stringify({ values: [values] }) });
-  } catch (e) {
-    // Fallback robusto para Microsoft Graph: algunos libros rechazan rows/add
-    // cuando el rango interno de la tabla queda desfasado. En ese caso se
-    // redimensiona la tabla y se escribe la fila con range PATCH codificado.
-    const key = tableKeyFromName(tableName);
-    const sheet = key ? SHEETS[key] : null;
-    if (!sheet || !raw[key]?.address) throw e;
-    const parts = a1Parts(raw[key].address);
-    const cols = parts.endColNum - parts.startColNum + 1;
-    if (values.length !== cols) throw e;
-    const nextRow = parts.endRow + 1;
-    const newAddress = `${parts.startCol}${parts.startRow}:${parts.endCol}${nextRow}`;
-    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/resize`, {
-      method: 'POST', body: JSON.stringify({ address: newAddress })
+  // limitar al ancho real de headers esperados si la hoja venía con columnas visuales extra
+  const usefulCols = Math.max(headers.filter(Boolean).length, fallbackHeaders.length, 1);
+  headers = headers.slice(0, usefulCols);
+  const data = aoa.slice(1)
+    .map((row, i) => ({row: (row || []).slice(0, usefulCols), originalIdx: i + 1}))
+    .filter(({row}) => !aoaIsEmptyRow(row))
+    .map(({row, originalIdx}) => {
+      const o = {__rowIndex: originalIdx, __address: `${sheetName}!A1:${XLSX.utils.encode_cell({r: Math.max(aoa.length-1,0), c: usefulCols-1})}`};
+      headers.forEach((h,j) => { if (h) o[h] = row[j]; });
+      return o;
     });
-    await patchRange(sheet, `${parts.startCol}${nextRow}:${parts.endCol}${nextRow}`, [values]);
-    raw[key].address = `${sheet}!${newAddress}`;
-  }
+  const endCell = XLSX.utils.encode_cell({r: Math.max(aoa.length-1, 0), c: usefulCols-1});
+  return { headers, data, address: `${sheetName}!A1:${endCell}` };
 }
+
+async function patchRange(sheet, address, values2d) {
+  const key = keyFromSheetName(sheet);
+  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
+  const parts = a1Parts(address);
+  for (let r=0; r<values2d.length; r++) {
+    for (let c=0; c<(values2d[r] || []).length; c++) {
+      setCell(ws, parts.startRow + r, parts.startColNum + c, values2d[r][c]);
+    }
+  }
+  await saveGastosWorkbook();
+}
+
+async function addRow(tableName, values) {
+  const key = tableKeyFromName(tableName);
+  if (!key) throw new Error('Tabla no configurada: ' + tableName);
+  const sheetName = SHEETS[key];
+  const ws = ensureSheetForKey(key);
+  const headers = EXPECTED_HEADERS[key] || [];
+  const aoa = sheetAoa(sheetName);
+  const colCount = Math.max(headers.length, (aoa[0] || []).filter(x=>x!=='').length, values.length);
+  if (values.length < colCount) values = values.concat(Array(colCount - values.length).fill(''));
+  if (values.length > colCount) values = values.slice(0, colCount);
+  let rowIndex0 = Math.max(aoa.length, 1);
+  // Si hay filas totalmente vacías al final o una única fila vacía de datos, reutilizarla.
+  for (let i=1; i<aoa.length; i++) {
+    const row = (aoa[i] || []).slice(0, colCount);
+    if (aoaIsEmptyRow(row)) { rowIndex0 = i; break; }
+  }
+  XLSX.utils.sheet_add_aoa(ws, [values], {origin:{r: rowIndex0, c:0}});
+  updateRef(ws, rowIndex0, colCount-1);
+  await saveGastosWorkbook();
+}
+
 async function writeFirstBlankDataRowIfAvailable(key, values) {
   const sheet = SHEETS[key];
-  if (!sheet || !raw[key]?.address) return false;
-  const parts = a1Parts(raw[key].address);
-  const cols = parts.endColNum - parts.startColNum + 1;
-  const hasOneBlankDataRow = (parts.endRow - parts.startRow) >= 1 && (rows[key] || []).length === 0;
-  if (!hasOneBlankDataRow || values.length !== cols) return false;
-  const firstDataRow = parts.startRow + 1;
-  await patchRange(sheet, `${parts.startCol}${firstDataRow}:${parts.endCol}${firstDataRow}`, [values]);
-  return true;
+  if (!sheet) return false;
+  const ws = ensureSheetForKey(key);
+  const aoa = sheetAoa(sheet);
+  const colCount = Math.max((EXPECTED_HEADERS[key] || []).length, values.length);
+  for (let i=1; i<aoa.length; i++) {
+    const row = (aoa[i] || []).slice(0, colCount);
+    if (aoaIsEmptyRow(row)) {
+      XLSX.utils.sheet_add_aoa(ws, [values], {origin:{r:i, c:0}});
+      await saveGastosWorkbook();
+      return true;
+    }
+  }
+  return false;
 }
+
 async function patchCell(sheet, address, value) {
-  const encAddr = encodeURIComponent(address);
-  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${encAddr}')`, { method: 'PATCH', body: JSON.stringify({ values: [[value]] }) });
+  const key = keyFromSheetName(sheet);
+  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
+  const parts = a1Parts(address);
+  setCell(ws, parts.startRow, parts.startColNum, value);
+  await saveGastosWorkbook();
 }
+
 function parseStartRow(address) {
   const a = (address || '').split('!').pop().split(':')[0].replace(/'/g, '');
   const m = a.match(/[A-Z]+(\d+)/i); return m ? Number(m[1]) : 1;
