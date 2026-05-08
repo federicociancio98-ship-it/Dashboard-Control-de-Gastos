@@ -689,6 +689,34 @@ function todayDDMMYYYY() {
   const d = new Date();
   return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
 }
+function inputDateToDDMMYYYY(input) {
+  if (!input) return todayDDMMYYYY();
+  const d = new Date(input + 'T00:00:00');
+  if (isNaN(d)) return todayDDMMYYYY();
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+}
+function dateToInputValueLocal(d) {
+  if (!d) return '';
+  const dt = d instanceof Date ? d : excelDateToDate(d);
+  if (!dt || isNaN(dt)) return '';
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
+function addMonthsYM(y, m, delta) {
+  const d = new Date(Number(y), Number(m) - 1 + Number(delta || 0), 1);
+  return { y: d.getFullYear(), m: d.getMonth() + 1, mesTxt: MESES_HON[d.getMonth()] };
+}
+function honorarioEmissionYM(f) {
+  if (f.fechaEmision instanceof Date && !isNaN(f.fechaEmision)) return { y: f.fechaEmision.getFullYear(), m: f.fechaEmision.getMonth() + 1 };
+  if (f.anioServicio && f.mesServicio) return addMonthsYM(f.anioServicio, f.mesServicio, 1);
+  return { y: 0, m: 0 };
+}
+function honorarioEmissionKey(f) {
+  const e = honorarioEmissionYM(f);
+  return (Number(e.y) || 0) * 100 + (Number(e.m) || 0);
+}
+function selectedServicePeriodForBilling(y, m) {
+  return addMonthsYM(y, m, -1);
+}
 function mesKeyHonorarios(f) {
   return (Number(f.anioServicio || f.anio) || 0) * 100 + (Number(f.mesServicio) || (MESES_HON.indexOf(f.mesTxt) + 1) || 0);
 }
@@ -697,15 +725,15 @@ function selectedHonorariosPeriod() {
   return { y, m, mesTxt: MESES_HON[m - 1] };
 }
 function detectFaltantesHonorarios(y, m) {
-  const mesTxt = MESES_HON[m - 1];
+  const per = selectedServicePeriodForBilling(y, m);
   const cubiertos = new Set(
     facturas
-      .filter(f => f.mesServicio === m && f.anioServicio === y)
+      .filter(f => f.mesServicio === per.m && f.anioServicio === per.y)
       .map(f => f.cliente)
   );
   return CLIENTES_RECURRENTES
     .filter(c => !cubiertos.has(c))
-    .map(c => ({ cliente: c, mes: mesTxt, anio: y }));
+    .map(c => ({ cliente: c, mes: per.mesTxt, anio: per.y, emisionY: y, emisionM: m }));
 }
 function nextHonorariosRowAndId() {
   const maxId = facturas.reduce((m, f) => Math.max(m, Number(f.id || 0)), 0);
@@ -790,20 +818,47 @@ function sugerirNombreHonorarios(prefijo, mtimeIso, mes, anio) {
   return `${prefijo}_${yyyy}${mm}${dd}_${mes || 'XXX'} ${anio || yyyy}.pdf`;
 }
 async function marcarFacturaHonorarios(rowExcel, nuevoEstado) {
+  if (nuevoEstado === 'Pagada') { openPagoHonorariosModal(rowExcel); return; }
   try {
     await patchHonorariosCell(`J${rowExcel}`, nuevoEstado);
-    const fechaPagoNueva = nuevoEstado === 'Pagada' ? todayDDMMYYYY() : '';
-    await patchHonorariosCell(`K${rowExcel}`, fechaPagoNueva);
-    facturas = facturas.map(f => f.rowExcel === rowExcel ? {
-      ...f,
-      estado: nuevoEstado,
-      fechaPago: nuevoEstado === 'Pagada' ? new Date() : null,
-      mesPago: nuevoEstado === 'Pagada' ? new Date().getMonth() + 1 : null,
-      anioPago: nuevoEstado === 'Pagada' ? new Date().getFullYear() : null
-    } : f);
+    await patchHonorariosCell(`K${rowExcel}`, '');
+    facturas = facturas.map(f => f.rowExcel === rowExcel ? { ...f, estado: nuevoEstado, fechaPago: null, mesPago: null, anioPago: null } : f);
     renderAll();
     setStatus('✓ Facturación actualizada', 'ok');
   } catch (e) { showError('No se pudo actualizar la factura: ' + e.message); setStatus('Error','err'); }
+}
+function openPagoHonorariosModal(rowExcel) {
+  const f = facturas.find(x => Number(x.rowExcel) === Number(rowExcel));
+  if (!f) return;
+  const defaultDate = f.fechaPago ? dateToInputValueLocal(f.fechaPago) : todayInputValue();
+  $('#modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <h2>Registrar cobro de factura</h2>
+        <div class="modal-sub">${escapeHtml(f.cliente)} · ${escapeHtml(f.concepto || '')} · ${fmtARS(f.monto)}</div>
+        <form id="pagoHonorariosForm">
+          <div class="form-group"><label>Fecha real de pago</label><input type="date" name="fechaPago" value="${defaultDate}" required></div>
+          <div class="info-box" style="margin-bottom:0">El ingreso se computará en el mes de esta fecha de pago.</div>
+          <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar cobro</button></div>
+        </form>
+      </div>
+    </div>`;
+  $('#pagoHonorariosForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    await guardarPagoHonorarios(rowExcel, fd.fechaPago);
+  });
+}
+async function guardarPagoHonorarios(rowExcel, fechaInput) {
+  try {
+    const fechaPagoNueva = inputDateToDDMMYYYY(fechaInput);
+    const d = new Date(fechaInput + 'T00:00:00');
+    await patchHonorariosCell(`J${rowExcel}`, 'Pagada');
+    await patchHonorariosCell(`K${rowExcel}`, fechaPagoNueva);
+    facturas = facturas.map(f => f.rowExcel === rowExcel ? { ...f, estado: 'Pagada', fechaPago: d, mesPago: d.getMonth() + 1, anioPago: d.getFullYear() } : f);
+    closeModal(); renderAll();
+    setStatus('✓ Cobro registrado en ' + MES_NAMES[d.getMonth()] + ' ' + d.getFullYear(), 'ok');
+  } catch (e) { showError('No se pudo registrar el cobro: ' + e.message); setStatus('Error','err'); }
 }
 async function desestimarHonorarios(cliente, mes, anio) {
   const cinfo = CLIENTES_CARPETAS[cliente] || {};
@@ -838,6 +893,10 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
             <div class="form-group"><label>Tipo</label><select name="tipo"><option value="Compartida">Compartida</option><option value="Sin Factura">Sin factura</option></select></div>
             <div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div>
           </div>
+          <div class="form-row">
+            <div class="form-group"><label>Fecha de registro/emisión</label><input type="date" name="fechaEmision" value="${addMonthsYM(anio, MESES_HON.indexOf(mes) + 1, 1).y}-${String(addMonthsYM(anio, MESES_HON.indexOf(mes) + 1, 1).m).padStart(2,'0')}-01"></div>
+            <div class="form-group"><label>Fecha real de cobro</label><input type="date" name="fechaPago" value="${todayInputValue()}"></div>
+          </div>
           <div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" required></div>
           <div class="form-group"><label>Concepto</label><input name="concepto" value="Ingreso ${escapeHtml(mes)} ${anio}"></div>
           <div class="form-group"><label>Notas</label><input name="notas" placeholder="Ej: factura emitida por colega"></div>
@@ -854,12 +913,12 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
         cuit: cinfo.cuit || '',
         mes,
         anio,
-        fechaEmision: '',
+        fechaEmision: fd.fechaEmision ? inputDateToDDMMYYYY(fd.fechaEmision) : '',
         nroFactura: '',
         concepto: fd.concepto || `Ingreso ${mes} ${anio}`,
         monto: Number(fd.monto),
         estado: fd.estado || 'Pagada',
-        fechaPago: fd.estado === 'Pagada' ? todayDDMMYYYY() : '',
+        fechaPago: fd.estado === 'Pagada' ? inputDateToDDMMYYYY(fd.fechaPago || todayInputValue()) : '',
         notas: fd.notas || '',
         pdf: '',
         tipo: fd.tipo || 'Compartida',
@@ -869,6 +928,46 @@ function openIngresoHonorariosModal(cliente, mes, anio) {
     } catch (e) { showError('No se pudo registrar ingreso: ' + e.message); setStatus('Error','err'); }
   });
 }
+function openIngresoHonorariosLibreModal() {
+  const { y, m } = selMonth();
+  const per = selectedServicePeriodForBilling(y, m);
+  const clientes = [...new Set([...CLIENTES_RECURRENTES, ...facturas.map(f => f.cliente).filter(Boolean)])].sort();
+  $('#modalRoot').innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <h2>Registrar ingreso manual / sin factura</h2>
+        <div class="modal-sub">Usalo para trabajos cobrados sin factura propia o ingresos no detectados automáticamente.</div>
+        <form id="ingHonorariosLibreForm">
+          <div class="form-group"><label>Cliente / origen</label><input list="clientesHonorariosList" name="cliente" required placeholder="Ej: Comuna de Acebal"><datalist id="clientesHonorariosList">${clientes.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist></div>
+          <div class="form-row"><div class="form-group"><label>Período del servicio</label><select name="mes">${MESES_HON.map(mm => `<option value="${mm}" ${mm === per.mesTxt ? 'selected' : ''}>${mm}</option>`).join('')}</select></div><div class="form-group"><label>Año período</label><input type="number" name="anio" value="${per.y}" required></div></div>
+          <div class="form-row"><div class="form-group"><label>Tipo</label><select name="tipo"><option value="Sin Factura">Sin factura</option><option value="Compartida">Compartida</option></select></div><div class="form-group"><label>Estado</label><select name="estado"><option value="Pagada">Ya cobrado</option><option value="Pendiente">A cobrar</option></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Fecha de registro/emisión</label><input type="date" name="fechaEmision" value="${y}-${String(m).padStart(2,'0')}-01"></div><div class="form-group"><label>Fecha real de cobro</label><input type="date" name="fechaPago" value="${todayInputValue()}"></div></div>
+          <div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" required></div>
+          <div class="form-group"><label>Concepto</label><input name="concepto" placeholder="Ej: trabajo puntual / ingreso sin factura"></div>
+          <div class="form-group"><label>Notas</label><input name="notas"></div>
+          <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Registrar</button></div>
+        </form>
+      </div>
+    </div>`;
+  $('#ingHonorariosLibreForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    const cinfo = CLIENTES_CARPETAS[fd.cliente] || {};
+    try {
+      await appendHonorariosRow({
+        cliente: fd.cliente, cuit: cinfo.cuit || '', mes: fd.mes, anio: Number(fd.anio),
+        fechaEmision: fd.fechaEmision ? inputDateToDDMMYYYY(fd.fechaEmision) : '', nroFactura: '',
+        concepto: fd.concepto || `Ingreso ${fd.mes} ${fd.anio}`, monto: Number(fd.monto),
+        estado: fd.estado || 'Pagada', fechaPago: fd.estado === 'Pagada' ? inputDateToDDMMYYYY(fd.fechaPago || todayInputValue()) : '',
+        notas: fd.notas || '', pdf: '', tipo: fd.tipo || 'Sin Factura',
+      });
+      closeModal(); setStatus('✓ Ingreso manual registrado', 'ok');
+    } catch (e) { showError('No se pudo registrar ingreso manual: ' + e.message); setStatus('Error','err'); }
+  });
+}
+window.openIngresoHonorariosLibreModal = openIngresoHonorariosLibreModal;
+window.openPagoHonorariosModal = openPagoHonorariosModal;
+
 async function auditarPDFsHonorarios() {
   auditingHonorarios = true; setStatus('Escaneando facturas…','wait'); renderAll();
   try {
@@ -945,6 +1044,7 @@ async function renombrarPDFHonorarios(cliente, itemId, sugerencia) {
   } catch (e) { showError('No se pudo renombrar: ' + e.message); setStatus('Error','err'); }
 }
 window.marcarFacturaHonorarios = marcarFacturaHonorarios;
+window.openPagoHonorariosModal = openPagoHonorariosModal;
 window.openIngresoHonorariosModal = openIngresoHonorariosModal;
 window.desestimarHonorarios = desestimarHonorarios;
 window.auditarPDFsHonorarios = auditarPDFsHonorarios;
@@ -1007,7 +1107,11 @@ function populateMonthFilter() {
   const keys = new Set();
   rows.transacciones.forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
   rows.cuotas.forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
-  facturas.forEach(f => { if (f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); });
+  facturas.forEach(f => {
+    const em = honorarioEmissionYM(f);
+    if (em.y && em.m) keys.add(monthKey(em.y, em.m));
+    if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago));
+  });
   rows.pagos.forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
   // Asegurar mes actual + 6 siguientes
   const now = new Date();
@@ -1035,13 +1139,10 @@ function selMonth() {
   };
 }
 function honorariosForMonth(y, m) {
-  // Devengado: facturas con Mes-de-servicio = (y, m), no desestimadas
-  const devengado = facturas.filter(f => f.anioServicio === y && f.mesServicio === m && f.tipo !== 'Desestimada');
-  // Cobrado: facturas con FechaPago en (y, m), independientemente del mes de servicio
-  const cobrado = facturas.filter(f => f.estado === 'Pagada' && f.anioPago === y && f.mesPago === m && f.tipo !== 'Desestimada');
-  // Por cobrar: pendientes hasta el mes seleccionado
   const yyyymm = y * 100 + m;
-  const porCobrar = facturas.filter(f => f.estado === 'Pendiente' && f.tipo !== 'Desestimada' && (f.anioServicio * 100 + f.mesServicio) <= yyyymm);
+  const devengado = facturas.filter(f => f.tipo !== 'Desestimada' && honorarioEmissionKey(f) === yyyymm);
+  const cobrado = facturas.filter(f => f.estado === 'Pagada' && f.anioPago === y && f.mesPago === m && f.tipo !== 'Desestimada');
+  const porCobrar = facturas.filter(f => f.estado === 'Pendiente' && f.tipo !== 'Desestimada' && honorarioEmissionKey(f) <= yyyymm);
   return { devengado, cobrado, porCobrar };
 }
 // Cuotas TC que TERMINAN de pagarse en el mes seleccionado
@@ -1246,7 +1347,7 @@ function renderKpis() {
 
   const items = [
     { label: 'Cobrado en el mes',     value: fmtARS(totalCobr),    cls: 'sage',  vcls: 'sage',  hint: `${cobrado.length} factura(s) cobradas` },
-    { label: 'Devengado del mes',     value: fmtARS(totalDeveng),  cls: 'slate', vcls: 'slate', hint: `${devengado.length} factura(s) por servicios` },
+    { label: 'Facturado / registrado', value: fmtARS(totalDeveng),  cls: 'slate', vcls: 'slate', hint: `${devengado.length} registro(s) emitidos/cargados` },
     { label: 'Por cobrar',            value: fmtARS(totalPorCobr), cls: 'warm',  vcls: 'warm',  hint: `${porCobrar.length} pendiente(s)` },
     { label: 'Gastos directos',       value: fmtARS(gastos),       cls: 'warm',  vcls: '',      hint: `${gastosBase.length} mov. sin pagos TC` },
     { label: 'Cuotas TC del mes',     value: fmtARS(cuotasMes),    cls: 'mauve', vcls: 'mauve', hint: `${cuotas.length} cuota(s)` },
@@ -1419,17 +1520,18 @@ function renderIngresosTab() {
   const totalOtros = sum(otros, 'Importe');
   const totalPendiente = sum(porCobrar, 'monto');
   const faltantes = detectFaltantesHonorarios(y, m);
+  const servicePer = selectedServicePeriodForBilling(y, m);
   const ingresosPeriodo = facturas
-    .filter(f => f.anioServicio === y && f.mesServicio === m && f.tipo !== 'Desestimada')
+    .filter(f => honorarioEmissionKey(f) === (y * 100 + m) && f.tipo !== 'Desestimada')
     .sort((a,b) => String(a.cliente).localeCompare(String(b.cliente)));
   const ingresosHistoricos = (() => {
     const keys = new Set();
-    facturas.forEach(f => { if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); if (f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); });
+    facturas.forEach(f => { const em = honorarioEmissionYM(f); if (em.y && em.m) keys.add(monthKey(em.y, em.m)); if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); });
     rows.transacciones.filter(r => r.Tipo === 'Ingreso').forEach(r => { if (r.Año && r.Mes) keys.add(monthKey(r.Año, r.Mes)); });
     return [...keys].sort().slice(-12).reverse().map(k => {
       const [yy, mm] = k.split('-').map(Number);
       const honCob = sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto');
-      const honDev = sum(facturas.filter(f => f.anioServicio === yy && f.mesServicio === mm && f.tipo !== 'Desestimada'), 'monto');
+      const honDev = sum(facturas.filter(f => honorarioEmissionKey(f) === yy * 100 + mm && f.tipo !== 'Desestimada'), 'monto');
       const manual = sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe');
       return { k, honCob, honDev, manual, total: honCob + manual };
     });
@@ -1480,7 +1582,7 @@ function renderIngresosTab() {
 
   return `
     ${faltantes.length ? `<div class="notice warn">
-      <div style="flex:1"><strong>⚠ Pendientes de emisión / registro — ${MES_NAMES[m-1]} ${y}:</strong><br>${faltantes.map(f=>escapeHtml(f.cliente)).join(' · ')}</div>
+      <div style="flex:1"><strong>⚠ Pendientes de emisión / registro en ${MES_NAMES[m-1]} ${y} — período ${servicePer.mesTxt} ${servicePer.y}:</strong><br>${faltantes.map(f=>escapeHtml(f.cliente)).join(' · ')}</div>
     </div>
     <div class="card" style="margin-bottom:18px">
       <div class="card-title">Acciones rápidas para clientes recurrentes sin registro</div>
@@ -1495,17 +1597,17 @@ function renderIngresosTab() {
 
     <div class="grid-3" style="margin-bottom:18px">
       <div class="kpi sage"><div class="kpi-label">Honorarios cobrados</div><div class="kpi-value sage">${fmtARS(totalCobrado)}</div><div class="kpi-sub">${cobrado.length} registro(s) con fecha de pago en ${MES_NAMES[m-1]} ${y}</div></div>
-      <div class="kpi slate"><div class="kpi-label">Devengado / facturado del mes</div><div class="kpi-value slate">${fmtARS(totalDevengado)}</div><div class="kpi-sub">${devengado.length} registro(s) del período</div></div>
+      <div class="kpi slate"><div class="kpi-label">Emitido / registrado en el mes</div><div class="kpi-value slate">${fmtARS(totalDevengado)}</div><div class="kpi-sub">${devengado.length} registro(s) con emisión/carga en ${MES_NAMES[m-1]} ${y}</div></div>
       <div class="kpi warm"><div class="kpi-label">Pendiente acumulado</div><div class="kpi-value warm">${fmtARS(totalPendiente)}</div><div class="kpi-sub">${porCobrar.length} registro(s) pendiente(s)</div></div>
     </div>
 
     <div class="grid-2" style="margin-bottom:18px">
-      <div class="card"><div class="card-title">Facturas / ingresos del período — ${MES_NAMES[m-1]} ${y}</div>
+      <div class="card"><div class="card-title">Facturas / ingresos emitidos o registrados en ${MES_NAMES[m-1]} ${y}</div>
         <div class="table-wrap"><table>
           <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>N°</th><th class="num">Monto</th><th>Acción</th></tr></thead>
           <tbody>
             ${ingresosPeriodo.length ? ingresosPeriodo.map(f => `<tr>
-              <td><strong>${escapeHtml(f.cliente)}</strong><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(f.concepto || '')}</div></td>
+              <td><strong>${escapeHtml(f.cliente)}</strong><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(f.concepto || '')}<br><span style="font-size:10px">Período: ${f.mesTxt} ${f.anioServicio}${f.fechaEmision ? ` · Emisión: ${f.fechaEmision.toLocaleDateString('es-AR')}` : ''}</span></div></td>
               <td>${tipoBadge(f.tipo)}</td>
               <td>${estadoBadge(f.estado)}</td>
               <td style="font-family:monospace;font-size:12px">${escapeHtml(f.nroFactura || '')}</td>
@@ -1519,8 +1621,8 @@ function renderIngresosTab() {
         </table></div>
       </div>
 
-      <div class="card"><div class="section-header"><div class="card-title" style="margin-bottom:0">Auditoría / carga automática de PDFs</div><button class="btn btn-slate btn-sm" onclick="auditarPDFsHonorarios()" ${auditingHonorarios ? 'disabled' : ''}>${auditingHonorarios ? 'Escaneando…' : 'Auditar PDFs'}</button></div>
-        <p style="font-size:13px;color:var(--text-soft);line-height:1.6">Escanea las carpetas de facturación propia de cada cliente, detecta PDFs nuevos y permite cargarlos al Excel de honorarios. El formato esperado es <strong>PREFIJO_AAAAMMDD_MES AÑO.pdf</strong>.</p>
+      <div class="card"><div class="section-header"><div class="card-title" style="margin-bottom:0">Auditoría / carga automática de PDFs</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openIngresoHonorariosLibreModal()">＋ Ingreso sin factura</button><button class="btn btn-slate btn-sm" onclick="auditarPDFsHonorarios()" ${auditingHonorarios ? 'disabled' : ''}>${auditingHonorarios ? 'Escaneando…' : 'Auditar PDFs'}</button></div></div>
+        <p style="font-size:13px;color:var(--text-soft);line-height:1.6">Escanea las carpetas de facturación propia de cada cliente, detecta PDFs nuevos y permite cargarlos al Excel de honorarios. También podés cargar ingresos manuales sin factura propia.</p>
         <div style="margin-top:14px">
           <div class="pending-item"><div><div class="pending-name">Otros ingresos manuales del mes</div><div class="pending-meta">Cargados desde movimientos generales</div></div><div class="pending-amount sage">${fmtARS(totalOtros)}</div></div>
         </div>
@@ -1548,7 +1650,7 @@ function renderIngresosTab() {
     </div>
 
     <div class="card"><div class="card-title">Histórico mensual de ingresos</div>
-      <div class="table-wrap"><table><thead><tr><th>Mes</th><th class="num">Honorarios cobrados</th><th class="num">Otros ingresos</th><th class="num">Total cobrado</th><th class="num">Devengado</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Mes</th><th class="num">Honorarios cobrados</th><th class="num">Otros ingresos</th><th class="num">Total cobrado</th><th class="num">Emitido / registrado</th></tr></thead><tbody>
         ${ingresosHistoricos.map(r => `<tr><td><strong>${labelMonthKey(r.k)}</strong></td><td class="num">${fmtARS(r.honCob)}</td><td class="num">${fmtARS(r.manual)}</td><td class="num" style="font-weight:600;color:var(--sage)">${fmtARS(r.total)}</td><td class="num">${fmtARS(r.honDev)}</td></tr>`).join('')}
       </tbody></table></div>
     </div>
@@ -1866,7 +1968,7 @@ function drawFlujoCharts() {
   facturas.forEach(f => { if (f.tipo === 'Desestimada') return; if (f.anioServicio && f.mesServicio) keys.add(monthKey(f.anioServicio, f.mesServicio)); if (f.anioPago && f.mesPago) keys.add(monthKey(f.anioPago, f.mesPago)); });
   const sorted = [...keys].filter(k => !k.includes('undefined')).sort().slice(-12);
   const cobrSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.estado === 'Pagada' && f.anioPago === yy && f.mesPago === mm && f.tipo !== 'Desestimada'), 'monto'); });
-  const devSerie  = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => f.anioServicio === yy && f.mesServicio === mm && f.tipo !== 'Desestimada'), 'monto'); });
+  const devSerie  = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(facturas.filter(f => honorarioEmissionKey(f) === yy * 100 + mm && f.tipo !== 'Desestimada'), 'monto'); });
   const otrosSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Ingreso' && r.Año === yy && r.Mes === mm), 'Importe'); });
   const gastoSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.transacciones.filter(r => r.Tipo === 'Gasto' && !isPagoTarjeta(r) && r.Año === yy && r.Mes === mm), 'Importe'); });
   const cuotaSerie = sorted.map(k => { const [yy, mm] = k.split('-').map(Number); return sum(rows.cuotas.filter(r => r.Año === yy && r.Mes === mm), 'MontoCuota'); });
@@ -1893,7 +1995,7 @@ function drawFlujoCharts() {
   const filas = sorted.map((k, i) => ({ Mes: labelMonthKey(k), Devengado: devSerie[i], Cobrado: cobrSerie[i], 'Otros ing.': otrosSerie[i], Gastos: gastoSerie[i], 'Cuotas TC': cuotaSerie[i], Saldo: saldoSerie[i] })).reverse();
   $('#flujoTable').innerHTML = `
     <table>
-      <thead><tr><th>Mes</th><th class="num">Devengado</th><th class="num">Cobrado</th><th class="num">Otros ing.</th><th class="num">Gastos</th><th class="num">Cuotas TC</th><th class="num">Saldo</th></tr></thead>
+      <thead><tr><th>Mes</th><th class="num">Emitido / registrado</th><th class="num">Cobrado</th><th class="num">Otros ing.</th><th class="num">Gastos</th><th class="num">Cuotas TC</th><th class="num">Saldo</th></tr></thead>
       <tbody>${filas.map(f => `<tr>
         <td><strong>${f.Mes}</strong></td>
         <td class="num">${fmtARS(f.Devengado)}</td>
