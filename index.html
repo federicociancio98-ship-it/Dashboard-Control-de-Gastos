@@ -443,13 +443,16 @@ async function gFetch(path, options = {}) {
   if (!t) return null;
   const headers = Object.assign({ 'Authorization': 'Bearer ' + t }, options.headers || {});
   if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-  if (sessionId && driveItem && path.includes('/items/' + driveItem.id + '/workbook/')) headers['workbook-session-id'] = sessionId;
+  if (sessionId && driveItem && path.includes('/items/' + driveItem.id + '/workbook/') && !path.includes('/createSession')) headers['workbook-session-id'] = sessionId;
   const res = await fetch('https://graph.microsoft.com/v1.0' + path, { ...options, headers });
   if (!res.ok) { const txt = await res.text(); throw new Error(res.status + ' ' + txt); }
   if (res.status === 204) return null;
   return res.json();
 }
 async function openWorkbook() {
+  // Importante: no reutilizar el workbook-session-id anterior al crear una nueva sesión.
+  // Microsoft Graph puede devolver BadRequest/malformed si /createSession recibe una sesión vieja.
+  sessionId = null;
   driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
   const s = await gFetch(`/me/drive/items/${driveItem.id}/workbook/createSession`, { method: 'POST', body: JSON.stringify({ persistChanges: true }) });
   sessionId = s.id;
@@ -813,10 +816,19 @@ async function upsertResumenReal(tarjeta, y, m, monto, estado = 'Pendiente', fec
     await patchCell(SHEETS.resumenesTC, 'G' + r, fechaPago || '');
     await patchCell(SHEETS.resumenesTC, 'H' + r, medioPago || '');
     await patchCell(SHEETS.resumenesTC, 'I' + r, notas || '');
+    Object.assign(existing, { MontoReal: Number(monto || 0), EstadoPago: estado || 'Pendiente', FechaPago: fechaPago || '', MedioPago: medioPago || '', Notas: notas || '' });
   } else {
     const row = [nextId(rows.resumenesTC || []), Number(y), Number(m), tarjeta, Number(monto || 0), estado || 'Pendiente', fechaPago || '', medioPago || '', notas || ''];
+    const parts = a1Parts(raw.resumenesTC.address);
+    const hasOnlyBlankRow = (parts.endRow - parts.startRow) >= 1 && (rows.resumenesTC || []).length === 0;
+    const newRowIndex = hasOnlyBlankRow ? 1 : (parts.endRow - parts.startRow + 1);
     const wroteBlank = await writeFirstBlankDataRowIfAvailable('resumenesTC', row);
     if (!wroteBlank) await addRow(TABLES.resumenesTC, row);
+    rows.resumenesTC.push({
+      __rowIndex: newRowIndex, __address: raw.resumenesTC.address,
+      ID: row[0], Año: row[1], Mes: row[2], Tarjeta: row[3], MontoReal: row[4],
+      EstadoPago: row[5], FechaPago: row[6], MedioPago: row[7], Notas: row[8]
+    });
   }
 }
 async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas) {
@@ -826,7 +838,14 @@ async function addPagoTarjetaMovimiento(tarjeta, fechaInput, monto, medio, notas
     'Pago resumen ' + tarjeta, Number(monto || 0), 'ARS', medio || 'Transferencia', notas || '',
     d.getMonth() + 1, d.getFullYear()
   ];
+  const parts = a1Parts(raw.transacciones.address);
+  const newRowIndex = (parts.endRow - parts.startRow + 1);
   await addRow(TABLES.transacciones, txRow);
+  rows.transacciones.push({
+    __rowIndex: newRowIndex, __address: raw.transacciones.address,
+    ID: txRow[0], Fecha: txRow[1], Tipo: txRow[2], Categoría: txRow[3], Descripción: txRow[4],
+    Importe: txRow[5], Moneda: txRow[6], MedioPago: txRow[7], Notas: txRow[8], Mes: txRow[9], Año: txRow[10]
+  });
 }
 function cardColor(name, idx = 0) {
   const c = allCardsFromConfig().find(x => x.Tarjeta === name);
@@ -1563,7 +1582,11 @@ function openResumenRealModal(tarjeta) {
     try {
       await upsertResumenReal(tarjeta, y, m, monto, estado, fechaPago, fd.medio || '', fd.notas || '');
       if (estado === 'Pagado' && monto > 0) await addPagoTarjetaMovimiento(tarjeta, fd.fecha || todayInputValue(), monto, fd.medio || 'Transferencia', fd.notas || 'Pago desde resumen real');
-      closeModal(); await loadAll();
+      closeModal();
+      normalizeRows();
+      populateMonthFilter();
+      renderAll();
+      setStatus('✓ Sincronizado', 'ok');
     } catch (err) { showError('No se pudo guardar el resumen real: ' + err.message); setStatus('Error', 'err'); }
   });
 }
