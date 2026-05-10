@@ -32,6 +32,7 @@
     })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet" />
@@ -89,20 +90,26 @@
     .card-pad-md { padding: 18px 20px; }
 
     /* ── KPIs ── */
-    .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 24px; }
-    .kpi { background: var(--surface); border-radius: var(--radius); border: 1.5px solid var(--border); box-shadow: var(--shadow); padding: 18px 20px; }
-    .kpi-label { font-size: 10px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; line-height: 1.3; }
-    .kpi-value { font-family: 'DM Serif Display'; font-size: 22px; color: var(--text); line-height: 1.1; }
+    .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .kpi { background: var(--surface); border-radius: var(--radius); border: 1.5px solid var(--border); box-shadow: var(--shadow); padding: 18px 20px; min-width: 0; overflow: hidden; }
+    .kpi-label { font-size: 10px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; line-height: 1.3; word-break: break-word; }
+    .kpi-value { font-family: 'DM Serif Display'; font-size: 28px; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; word-break: break-word; }
     .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+    /* Grid auto-responsive especifico para las cards de tarjetas, evita overflow en iPhone */
+    .kpis-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .kpis-cards .kpi-value { font-size: 22px; }
     .kpi.slate { border-top: 3px solid var(--slate); }
     .kpi.sage  { border-top: 3px solid var(--sage); }
     .kpi.warm  { border-top: 3px solid var(--warm); }
     .kpi.mauve { border-top: 3px solid var(--mauve); }
     .kpi.sand  { border-top: 3px solid var(--sand); }
-    .kpi-value.sage  { color: #4a7559; }
-    .kpi-value.warm  { color: var(--warm); }
-    .kpi-value.slate { color: var(--slate); }
-    .kpi-value.mauve { color: var(--mauve); }
+    /* Colores de numero con saturacion mas marcada para que el numero grande
+       se lea de un vistazo y la semantica sea inequivoca. */
+    .kpi-value.sage  { color: #3d6a52; }
+    .kpi-value.warm  { color: #b85f3f; }
+    .kpi-value.slate { color: #4d77a0; }
+    .kpi-value.mauve { color: #7d6592; }
+    .kpi-value.sand  { color: #a98759; }
 
     /* ── GRID ── */
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
@@ -492,6 +499,39 @@ const PDF_NAME_REGEX = /^([A-Z0-9]{2,24})_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|A
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
 const CARD_COLORS = { 'Santa Fe PAPA': '#7aa68a', 'Macro PAPA': '#1f5fa8', 'Macro FEDE': '#1f5fa8', 'BBVA FEDE': '#49a6d8' };
 
+// Registramos el plugin de datalabels una sola vez para que todos los donuts
+// puedan mostrar el porcentaje encima de cada porcion.
+if (typeof Chart !== 'undefined' && typeof ChartDataLabels !== 'undefined') {
+  Chart.register(ChartDataLabels);
+  Chart.defaults.plugins.datalabels = { display: false };
+}
+
+function donutOptions(extra = {}) {
+  return {
+    responsive: true, maintainAspectRatio: false, cutout: '62%',
+    plugins: {
+      legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 }, padding: 8 } },
+      datalabels: {
+        display: ctx => {
+          const data = ctx.chart.data.datasets[0].data || [];
+          const total = data.reduce((a,v)=>a+Number(v||0),0);
+          const v = Number(data[ctx.dataIndex] || 0);
+          return total > 0 && v / total >= 0.04;
+        },
+        color: '#fff',
+        font: { weight: '600', size: 11, family: 'DM Sans' },
+        formatter: (value, ctx) => {
+          const data = ctx.chart.data.datasets[0].data || [];
+          const total = data.reduce((a,v)=>a+Number(v||0),0);
+          if (!total) return '';
+          return Math.round((value / total) * 100) + '%';
+        }
+      }
+    },
+    ...extra
+  };
+}
+
 // ╔════════════════════════════════════════════════════════════════════════╗
 // ║ STATE                                                                   ║
 // ╚════════════════════════════════════════════════════════════════════════╝
@@ -731,23 +771,33 @@ async function saveGastosWorkbook() {
   if (!gastosWorkbook || !driveItem) return;
   const t = await getToken();
   const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
+  // Sin If-Match: PUT /content reemplaza siempre. Si el archivo está bloqueado por
+  // coautoria (Excel desktop, app movil u otra pestana abierta), Graph devuelve 412
+  // con code "notAllowed". Lo detectamos y damos un mensaje util en vez del JSON crudo.
   const upload = async () => fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
     method: 'PUT',
     headers: {
       Authorization: 'Bearer ' + t,
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'If-Match': '*'
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     },
     body: wbout
   });
   let res = await upload();
-  if (!res.ok && (res.status === 409 || res.status === 412)) {
-    // OneDrive puede modificar el eTag entre lectura y escritura. Forzamos reemplazo y reintentamos.
-    driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
+  // Reintentos para errores transitorios (eTag stale, lock coautoria, throttling).
+  for (let attempt = 0; attempt < 3 && !res.ok && [409, 412, 423, 503].includes(res.status); attempt++) {
+    await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+    try { driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`); } catch (_) {}
     res = await upload();
   }
-  if (!res.ok) throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + await res.text());
-  driveItem = await res.json();
+  if (!res.ok) {
+    const txt = await res.text();
+    const locked = res.status === 412 || res.status === 423 || /notAllowed|resourceLocked|locked|coauth/i.test(txt);
+    if (locked) {
+      throw new Error('Gastos 2026.xlsx parece estar abierto en Excel/OneDrive (escritorio, app movil u otra pestana). Cerralo y reintenta.');
+    }
+    throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + txt);
+  }
+  try { driveItem = await res.json(); } catch (_) { /* ignoramos parse fail */ }
 }
 
 async function readTable(name) {
@@ -854,6 +904,34 @@ async function loadHonorarios() {
     return parseHonorarios(r);
   } catch (e) { console.warn('No se pudo leer honorarios:', e); return []; }
 }
+function parseHonorariosFechaPago(rawValue, rawText) {
+  // Intenta extraer una fecha de pago aceptando todos los formatos que Graph
+  // puede devolvernos segun como Excel haya serializado la celda K.
+  if (rawValue instanceof Date && !isNaN(rawValue)) return rawValue;
+  if (typeof rawValue === 'number' && isFinite(rawValue) && rawValue > 0) {
+    const d = excelDateToDate(rawValue);
+    if (d && !isNaN(d)) return d;
+  }
+  const candidatos = [rawText, rawValue].map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+  for (const txt of candidatos) {
+    if (!txt || txt === '0') continue;
+    let m = txt.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    m = txt.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    m = txt.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/);
+    if (m) {
+      const yr = Number(m[3]); const fullY = yr < 50 ? 2000 + yr : 1900 + yr;
+      return new Date(fullY, Number(m[2]) - 1, Number(m[1]));
+    }
+    if (/^\d+(\.\d+)?$/.test(txt)) {
+      const d = excelDateToDate(Number(txt));
+      if (d && !isNaN(d) && d.getFullYear() > 2000) return d;
+    }
+  }
+  return null;
+}
+
 function parseHonorarios(range) {
   const values = range?.values || [];
   const text = range?.text || [];
@@ -881,14 +959,10 @@ function parseHonorarios(range) {
       if (s.startsWith('des')) return 'Desestimada';
       return 'Propia';
     })();
-    let fechaPago = null;
-    const fpRaw = row[10];
-    if (typeof fpRaw === 'number') fechaPago = excelDateToDate(fpRaw);
-    else {
-      const txt = String(t[10] || fpRaw || '').trim();
-      const m = txt.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-      if (m) fechaPago = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
-    }
+    // Parser tolerante (ver parseHonorariosFechaPago) acepta serial Excel,
+    // ISO, DD/MM/YYYY, DD-MM-YYYY o ano corto. Asi el KPI "Cobrado en el mes"
+    // no vuelve a $0 al recargar tras una edicion previa.
+    const fechaPago = parseHonorariosFechaPago(row[10], t[10]);
     return {
       rowExcel: i + 4, id: Number(rawId),
       cliente: String(row[1] || '').trim(),
@@ -1085,10 +1159,14 @@ function openPagoHonorariosModal(rowExcel) {
 }
 async function guardarPagoHonorarios(rowExcel, fechaInput) {
   try {
-    const fechaPagoNueva = inputDateToDDMMYYYY(fechaInput);
     const d = new Date(fechaInput + 'T00:00:00');
+    // Escribimos la fecha como SERIAL numerico (no como string DD/MM/YYYY) para
+    // que al releer la celda Graph siempre devuelva un numero y nunca quede
+    // ambigua segun el formato/locale. Esto evita que el KPI "Cobrado en el
+    // mes" se vuelva $0 al refrescar tras una edicion previa.
+    const serial = dateToExcelSerial(fechaInput);
     await patchHonorariosCell(`J${rowExcel}`, 'Pagada');
-    await patchHonorariosCell(`K${rowExcel}`, fechaPagoNueva);
+    await patchHonorariosCell(`K${rowExcel}`, serial);
     facturas = facturas.map(f => f.rowExcel === rowExcel ? { ...f, estado: 'Pagada', fechaPago: d, mesPago: d.getMonth() + 1, anioPago: d.getFullYear() } : f);
     closeModal(); renderAll();
     setStatus('✓ Cobro registrado en ' + MES_NAMES[d.getMonth()] + ' ' + d.getFullYear(), 'ok');
@@ -1252,7 +1330,17 @@ async function auditarPDFsHonorarios() {
         if (!parsed) {
           status = 'mal-nombrado';
           sugerencia = sugerirNombreHonorarios(info.prefijo, pdf.lastModifiedDateTime, '', '');
-          hint = `No cumple formato. Sugerido: ${sugerencia}`;
+          // Diagnostico especifico: si la fecha no tiene exactamente 8 digitos lo
+          // decimos explicitamente para que el usuario vea que corregir.
+          const digMatch = pdf.name.match(/_(\d+)_/);
+          const digitos = digMatch ? digMatch[1].length : null;
+          if (digitos !== null && digitos !== 8) {
+            hint = `La fecha tiene ${digitos} digitos en lugar de 8 (formato AAAAMMDD). Sugerido: ${sugerencia}`;
+          } else if (!/_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC) \d{4}\.pdf$/i.test(pdf.name)) {
+            hint = `Falta o sobra algun separador (formato esperado: PREFIJO_AAAAMMDD_MES ANO.pdf). Sugerido: ${sugerencia}`;
+          } else {
+            hint = `No cumple formato. Sugerido: ${sugerencia}`;
+          }
           result.summary.malNombrados++;
         } else if (parsed.prefijo !== info.prefijo) {
           status = 'mal-nombrado';
@@ -1591,10 +1679,18 @@ function renderAll() {
 }
 
 function ahorroTransaccionesResumen() {
+  // Movimientos categorizados explicitamente como ahorro/inversion.
   const arr = rows.transacciones.filter(r => r.Tipo === 'Gasto' && fixedKey(r.Categoría) === fixedKey('Ahorro / Inversiones'));
-  const ars = arr.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.Importe||0),0);
-  const usd = arr.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.Importe||0),0);
-  return { ars, usd, count: arr.length };
+  let ars = arr.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.Importe||0),0);
+  let usd = arr.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.Importe||0),0);
+  // Metas activas: sumamos el "MontoActual" cargado al crear/editar la meta.
+  // De este modo si Federico carga una meta nueva con $100 USD el KPI lo
+  // refleja aunque todavia no haya creado un movimiento en tbl_Transacciones.
+  const metasActivas = (rows.ahorro || []).filter(r => String(r.Activa || 'SI').toUpperCase() === 'SI');
+  const metasARS = metasActivas.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
+  const metasUSD = metasActivas.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
+  ars += metasARS; usd += metasUSD;
+  return { ars, usd, count: arr.length + metasActivas.length };
 }
 function deudaPendienteARS() {
   return rows.deudas.filter(r => r.Tipo === 'Por cobrar' && !['cobrada','pagada','anulada'].includes(String(r.Estado||'').toLowerCase()) && String(r.Moneda||'ARS').toUpperCase()==='ARS').reduce((a,r)=>a+Number(r.Monto||0),0)
@@ -1633,7 +1729,7 @@ function renderKpis() {
     { label: 'Cobrado en el mes',     value: fmtARS(totalCobr),    cls: 'sage',  vcls: 'sage',  hint: `${cobrado.length} factura(s) cobradas` },
     { label: 'Facturado / registrado', value: fmtARS(totalDeveng),  cls: 'slate', vcls: 'slate', hint: `${devengado.length} registro(s) emitidos/cargados` },
     { label: 'Por cobrar',            value: fmtARS(totalPorCobr), cls: 'warm',  vcls: 'warm',  hint: `${porCobrar.length} pendiente(s)` },
-    { label: 'Gastos directos',       value: fmtARS(gastos),       cls: 'warm',  vcls: '',      hint: `${gastosBase.length} mov. sin pagos TC` },
+    { label: 'Gastos directos',       value: fmtARS(gastos),       cls: 'warm',  vcls: 'warm',  hint: `${gastosBase.length} mov. sin pagos TC` },
     { label: 'Cuotas TC del mes',     value: fmtARS(cuotasMes),    cls: 'mauve', vcls: 'mauve', hint: `${cuotas.length} cuota(s)` },
     { label: 'Saldo del mes',         value: fmtARS(saldo),        cls: saldoCls, vcls: saldoCls, hint: 'Cobrado − gastos − cuotas' }
   ];
@@ -1740,7 +1836,7 @@ function renderResumenTab() {
     </div>
     <div class="card" style="margin-top:18px">
       <div class="card-title">Tarjetas — a pagar este mes</div>
-      <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:0">${cardBoxes || '<p style="color:var(--text-muted);font-size:13px">Sin tarjetas configuradas.</p>'}</div>
+      <div class="kpis kpis-cards" style="margin-bottom:0">${cardBoxes || '<p style="color:var(--text-muted);font-size:13px">Sin tarjetas configuradas.</p>'}</div>
     </div>`;
 }
 function drawResumenCharts() {
@@ -1751,8 +1847,7 @@ function drawResumenCharts() {
     charts.donut = new Chart(donut, {
       type: 'doughnut',
       data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
-        plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
+      options: donutOptions()
     });
   }
   const { porCobrar } = honorariosForMonth(y, m);
@@ -2255,7 +2350,7 @@ function drawCategoriasCharts() {
     charts.catDonut = new Chart(document.getElementById('catDonut'), {
       type: 'doughnut',
       data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
+      options: donutOptions()
     });
     charts.catBars = new Chart(document.getElementById('catBars'), {
       type: 'bar', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: gs.map((_, i) => COLORS_PALETTE[i % COLORS_PALETTE.length]), borderRadius: 4 }] },
@@ -2393,7 +2488,46 @@ function openDeudaModal(tipo='Por pagar', rowIndex=null) {
 function openSettleDebtModal(rowIndex) {
   const r=rows.deudas.find(x=>x.__rowIndex===rowIndex); if(!r) return; const isPay=r.Tipo==='Por pagar'; const cat=r.Categoría||'Préstamos / Deudas';
   $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${isPay?'Pagar':'Cobrar'} deuda — ${escapeHtml(r.Contraparte)}</h2><form id="settleDebtForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${todayInputValue()}"></div><div class="form-group"><label>Monto</label><input type="number" step="0.01" name="monto" value="${r.Monto}" required></div></div><div class="form-row"><div class="form-group"><label>Categoría</label><select name="categoria" onchange="updateSubcatSelect(this)">${CATEGORIAS_GASTO.map(c=>`<option ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Subcategoría</label><select name="subcategoria">${subcatOptions(cat,r.Subcategoría||'')}</select></div></div><div class="form-group"><label>Medio</label><select name="medio">${MEDIOS_PAGO_NO_TC.map(m=>`<option>${m}</option>`).join('')}</select></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Confirmar</button></div></form></div></div>`;
-  $('#settleDebtForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); try{ const er=excelRowFromIndex('deudas',rowIndex); const fecha=dateToExcelSerial(fd.fecha||todayInputValue()); await patchCells(SHEETS.deudas,[['H'+er,isPay?'Pagada':'Cobrada'],['J'+er,fd.categoria],['K'+er,fd.subcategoria||''],['L'+er,fecha],['M'+er,fd.medio||'Transferencia']]); const d=new Date((fd.fecha||todayInputValue())+'T00:00:00'); await addRow(TABLES.transacciones,[nextId(rows.transacciones),fecha,isPay?'Gasto':'Ingreso',isPay?fd.categoria:'Otros', (isPay?'Pago deuda ':'Cobro deuda ')+r.Contraparte, Number(fd.monto), r.Moneda||'ARS', fd.medio||'Transferencia', 'Desde panel de deudas', d.getMonth()+1, d.getFullYear(), isPay?(fd.subcategoria||''):'']); closeModal(); await loadAll(); }catch(e){showError('No se pudo confirmar deuda: '+e.message);} });
+  $('#settleDebtForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    setStatus(isPay ? 'Marcando deuda como pagada...' : 'Marcando deuda como cobrada...', 'wait');
+    try {
+      const er = excelRowFromIndex('deudas', rowIndex);
+      const fecha = dateToExcelSerial(fd.fecha || todayInputValue());
+      await patchCells(SHEETS.deudas, [
+        ['H' + er, isPay ? 'Pagada' : 'Cobrada'],
+        ['J' + er, fd.categoria],
+        ['K' + er, fd.subcategoria || ''],
+        ['L' + er, fecha],
+        ['M' + er, fd.medio || 'Transferencia']
+      ]);
+      // Estado local actualizado para que la UI refleje el cambio aunque el
+      // addRow posterior llegara a fallar.
+      const cached = rows.deudas.find(x => Number(x.__rowIndex) === Number(rowIndex));
+      if (cached) Object.assign(cached, { Estado: isPay ? 'Pagada' : 'Cobrada', Categoría: fd.categoria, Subcategoría: fd.subcategoria || '', FechaPagoCobro: fecha, MedioPagoCobro: fd.medio || 'Transferencia' });
+      const d = new Date((fd.fecha || todayInputValue()) + 'T00:00:00');
+      try {
+        await addRow(TABLES.transacciones, [
+          nextId(rows.transacciones), fecha, isPay ? 'Gasto' : 'Ingreso',
+          isPay ? fd.categoria : 'Otros',
+          (isPay ? 'Pago deuda ' : 'Cobro deuda ') + r.Contraparte,
+          Number(fd.monto), r.Moneda || 'ARS', fd.medio || 'Transferencia',
+          'Desde panel de deudas', d.getMonth() + 1, d.getFullYear(),
+          isPay ? (fd.subcategoria || '') : ''
+        ]);
+      } catch (txErr) {
+        console.warn('Deuda marcada pero no se pudo crear movimiento espejo:', txErr);
+        showError('Deuda marcada como ' + (isPay ? 'pagada' : 'cobrada') + ', pero no se creo el movimiento en transacciones: ' + txErr.message);
+      }
+      closeModal();
+      await loadAll();
+      setStatus(isPay ? 'OK Deuda marcada pagada' : 'OK Deuda marcada cobrada', 'ok');
+    } catch (e) {
+      showError('No se pudo confirmar deuda: ' + e.message);
+      setStatus('Error', 'err');
+    }
+  });
 }
 function openInversionModal(rowIndex=null){ const r=rowIndex?rows.inversiones.find(x=>x.__rowIndex===rowIndex):null; $('#modalRoot').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>${r?'Editar':'Agregar'} inversión</h2><form id="invForm"><div class="form-row"><div class="form-group"><label>Fecha</label><input type="date" name="fecha" value="${r?.FechaRegistro?new Date(excelDateToDate(r.FechaRegistro)).toISOString().slice(0,10):todayInputValue()}"></div><div class="form-group"><label>Tipo activo</label><select name="tipo"><option>Cripto</option><option>Acciones</option><option>Bonos</option><option>Plazo fijo</option><option>FCI</option></select></div></div><div class="form-row"><div class="form-group"><label>Ticker / nombre</label><input name="ticker" value="${escapeHtml(r?.Ticker||'')}" required></div><div class="form-group"><label>Moneda</label><select name="moneda"><option ${r?.Moneda==='ARS'?'selected':''}>ARS</option><option ${r?.Moneda==='USD'?'selected':''}>USD</option></select></div></div><div class="form-row-3"><div class="form-group"><label>Cantidad</label><input type="number" step="0.000001" name="cantidad" value="${r?.Cantidad||''}"></div><div class="form-group"><label>PPC</label><input type="number" step="0.01" name="ppc" value="${r?.PPC||''}"></div><div class="form-group"><label>Precio actual</label><input type="number" step="0.01" name="precio" value="${r?.PrecioActual||''}"></div></div><div class="form-group"><label>Notas</label><input name="notas" value="${escapeHtml(r?.Notas||'')}"></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`; if(r){ $('#invForm [name="tipo"]').value=r.TipoActivo||'Acciones'; } $('#invForm').addEventListener('submit', async ev=>{ev.preventDefault(); const fd=Object.fromEntries(new FormData(ev.target)); const cant=Number(fd.cantidad||0), ppc=Number(fd.ppc||0), precio=Number(fd.precio||0); const gan=(precio-ppc)*cant; const ten=precio*cant; try{ if(r){ const er=excelRowFromIndex('inversiones',rowIndex); await patchCells(SHEETS.inversiones,[['B'+er,dateToExcelSerial(fd.fecha||todayInputValue())],['D'+er,fd.tipo],['E'+er,fd.ticker],['F'+er,cant],['G'+er,ppc],['H'+er,precio],['I'+er,gan],['J'+er,ten],['K'+er,fd.moneda],['L'+er,fd.notas||''],['M'+er,'Activa']]); } else { await addRow(TABLES.inversiones,[nextId(rows.inversiones),dateToExcelSerial(fd.fecha||todayInputValue()),'Sin definir',fd.tipo,fd.ticker,cant,ppc,precio,gan,ten,fd.moneda,fd.notas||'','Activa']); } closeModal(); await loadAll(); }catch(e){showError('No se pudo guardar inversión: '+e.message);} }); }
 async function deleteInversion(rowIndex){ if(!confirm('¿Eliminar inversión? No se borra la fila histórica, se marca como Eliminada.')) return; try{ const er=excelRowFromIndex('inversiones',rowIndex); await patchCell(SHEETS.inversiones,'M'+er,'Eliminada'); await loadAll(); }catch(e){showError('No se pudo eliminar inversión: '+e.message);} }
