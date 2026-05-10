@@ -95,7 +95,6 @@
     .kpi-label { font-size: 10px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; line-height: 1.3; word-break: break-word; }
     .kpi-value { font-family: 'DM Serif Display'; font-size: 28px; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; word-break: break-word; }
     .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
-    /* Grid auto-responsive especifico para las cards de tarjetas, evita overflow en iPhone */
     .kpis-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
     .kpis-cards .kpi-value { font-size: 22px; }
     .kpi.slate { border-top: 3px solid var(--slate); }
@@ -103,8 +102,6 @@
     .kpi.warm  { border-top: 3px solid var(--warm); }
     .kpi.mauve { border-top: 3px solid var(--mauve); }
     .kpi.sand  { border-top: 3px solid var(--sand); }
-    /* Colores de numero con saturacion mas marcada para que el numero grande
-       se lea de un vistazo y la semantica sea inequivoca. */
     .kpi-value.sage  { color: #3d6a52; }
     .kpi-value.warm  { color: #b85f3f; }
     .kpi-value.slate { color: #4d77a0; }
@@ -499,8 +496,6 @@ const PDF_NAME_REGEX = /^([A-Z0-9]{2,24})_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|A
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
 const CARD_COLORS = { 'Santa Fe PAPA': '#7aa68a', 'Macro PAPA': '#1f5fa8', 'Macro FEDE': '#1f5fa8', 'BBVA FEDE': '#49a6d8' };
 
-// Registramos el plugin de datalabels una sola vez para que todos los donuts
-// puedan mostrar el porcentaje encima de cada porcion.
 if (typeof Chart !== 'undefined' && typeof ChartDataLabels !== 'undefined') {
   Chart.register(ChartDataLabels);
   Chart.defaults.plugins.datalabels = { display: false };
@@ -771,7 +766,7 @@ async function saveGastosWorkbook() {
   if (!gastosWorkbook || !driveItem) return;
   const t = await getToken();
   const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
-  // Sin If-Match: PUT /content reemplaza siempre. Si el archivo está bloqueado por
+  // Sin If-Match: PUT /content reemplaza siempre. Si el archivo esta bloqueado por
   // coautoria (Excel desktop, app movil u otra pestana abierta), Graph devuelve 412
   // con code "notAllowed". Lo detectamos y damos un mensaje util en vez del JSON crudo.
   const upload = async () => fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
@@ -783,7 +778,6 @@ async function saveGastosWorkbook() {
     body: wbout
   });
   let res = await upload();
-  // Reintentos para errores transitorios (eTag stale, lock coautoria, throttling).
   for (let attempt = 0; attempt < 3 && !res.ok && [409, 412, 423, 503].includes(res.status); attempt++) {
     await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
     try { driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`); } catch (_) {}
@@ -797,7 +791,7 @@ async function saveGastosWorkbook() {
     }
     throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + txt);
   }
-  try { driveItem = await res.json(); } catch (_) { /* ignoramos parse fail */ }
+  try { driveItem = await res.json(); } catch (_) {}
 }
 
 async function readTable(name) {
@@ -905,8 +899,6 @@ async function loadHonorarios() {
   } catch (e) { console.warn('No se pudo leer honorarios:', e); return []; }
 }
 function parseHonorariosFechaPago(rawValue, rawText) {
-  // Intenta extraer una fecha de pago aceptando todos los formatos que Graph
-  // puede devolvernos segun como Excel haya serializado la celda K.
   if (rawValue instanceof Date && !isNaN(rawValue)) return rawValue;
   if (typeof rawValue === 'number' && isFinite(rawValue) && rawValue > 0) {
     const d = excelDateToDate(rawValue);
@@ -959,9 +951,8 @@ function parseHonorarios(range) {
       if (s.startsWith('des')) return 'Desestimada';
       return 'Propia';
     })();
-    // Parser tolerante (ver parseHonorariosFechaPago) acepta serial Excel,
-    // ISO, DD/MM/YYYY, DD-MM-YYYY o ano corto. Asi el KPI "Cobrado en el mes"
-    // no vuelve a $0 al recargar tras una edicion previa.
+    // Parser tolerante (parseHonorariosFechaPago) acepta serial Excel, ISO,
+    // DD/MM/YYYY, DD-MM-YYYY o ano corto. Asi el KPI "Cobrado" no vuelve a $0.
     const fechaPago = parseHonorariosFechaPago(row[10], t[10]);
     return {
       rowExcel: i + 4, id: Number(rawId),
@@ -1160,10 +1151,8 @@ function openPagoHonorariosModal(rowExcel) {
 async function guardarPagoHonorarios(rowExcel, fechaInput) {
   try {
     const d = new Date(fechaInput + 'T00:00:00');
-    // Escribimos la fecha como SERIAL numerico (no como string DD/MM/YYYY) para
-    // que al releer la celda Graph siempre devuelva un numero y nunca quede
-    // ambigua segun el formato/locale. Esto evita que el KPI "Cobrado en el
-    // mes" se vuelva $0 al refrescar tras una edicion previa.
+    // Escribimos serial numerico (no DD/MM/YYYY) para que la celda al releerse
+    // siempre vuelva interpretable y el KPI "Cobrado" no se vuelva $0.
     const serial = dateToExcelSerial(fechaInput);
     await patchHonorariosCell(`J${rowExcel}`, 'Pagada');
     await patchHonorariosCell(`K${rowExcel}`, serial);
@@ -1330,8 +1319,6 @@ async function auditarPDFsHonorarios() {
         if (!parsed) {
           status = 'mal-nombrado';
           sugerencia = sugerirNombreHonorarios(info.prefijo, pdf.lastModifiedDateTime, '', '');
-          // Diagnostico especifico: si la fecha no tiene exactamente 8 digitos lo
-          // decimos explicitamente para que el usuario vea que corregir.
           const digMatch = pdf.name.match(/_(\d+)_/);
           const digitos = digMatch ? digMatch[1].length : null;
           if (digitos !== null && digitos !== 8) {
@@ -1679,13 +1666,10 @@ function renderAll() {
 }
 
 function ahorroTransaccionesResumen() {
-  // Movimientos categorizados explicitamente como ahorro/inversion.
   const arr = rows.transacciones.filter(r => r.Tipo === 'Gasto' && fixedKey(r.Categoría) === fixedKey('Ahorro / Inversiones'));
   let ars = arr.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.Importe||0),0);
   let usd = arr.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.Importe||0),0);
-  // Metas activas: sumamos el "MontoActual" cargado al crear/editar la meta.
-  // De este modo si Federico carga una meta nueva con $100 USD el KPI lo
-  // refleja aunque todavia no haya creado un movimiento en tbl_Transacciones.
+  // Metas activas suman su MontoActual aunque no haya un movimiento espejo todavia.
   const metasActivas = (rows.ahorro || []).filter(r => String(r.Activa || 'SI').toUpperCase() === 'SI');
   const metasARS = metasActivas.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
   const metasUSD = metasActivas.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
@@ -2364,32 +2348,99 @@ function drawCategoriasCharts() {
 
 // ── TAB: MOVIMIENTOS ─────────────────────────────────────────────────────
 function renderMovimientosTab() {
-  const { tx } = selMonth();
-  const sorted = [...tx].sort((a, b) => {
-    const da = excelDateToDate(a.Fecha), db = excelDateToDate(b.Fecha);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+  const { y, m, tx } = selMonth();
+
+  // INGRESOS = facturas honorarios cobradas en el mes (fechaPago) + transacciones
+  // Tipo='Ingreso'. Las facturas no se duplican como movimiento porque viven en
+  // el Excel de honorarios — las mostramos directo desde ese array.
+  const ingresosFact = facturas
+    .filter(f => f.estado === 'Pagada' && f.anioPago === y && f.mesPago === m && f.tipo !== 'Desestimada')
+    .map(f => ({
+      kind: 'factura',
+      sortMs: f.fechaPago ? f.fechaPago.getTime() : 0,
+      fechaTxt: f.fechaPago ? f.fechaPago.toLocaleDateString('es-AR') : '',
+      fuente: 'Honorarios',
+      categoria: f.cliente,
+      detalle: (f.concepto || ('Honorarios ' + f.mesTxt + ' ' + f.anioServicio)) + (f.nroFactura ? ' · ' + f.nroFactura : ''),
+      medio: '',
+      importeFmt: fmtARS(f.monto),
+      monto: Number(f.monto || 0),
+      actions: `<button class="btn btn-outline btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pendiente')">Revertir cobro</button>`
+    }));
+  const ingresosManual = tx.filter(r => r.Tipo === 'Ingreso').map(r => ({
+    kind: 'manual',
+    sortMs: excelDateToDate(r.Fecha)?.getTime() || 0,
+    fechaTxt: dateText(r.Fecha),
+    fuente: 'Manual',
+    categoria: r.Categoría || '',
+    detalle: r.Descripción || '',
+    medio: r.MedioPago || '',
+    importeFmt: fmtMoney(r.Importe, r.Moneda),
+    monto: Number(r.Importe || 0),
+    actions: `<button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button>`
+  }));
+  const ingresos = [...ingresosFact, ...ingresosManual].sort((a, b) => b.sortMs - a.sortMs);
+  const totalIngresos = ingresos.reduce((a, x) => a + x.monto, 0);
+
+  // EGRESOS = todos los Tipo='Gasto'. Esto ya incluye automaticamente: pagos de
+  // deuda, aportes a metas, pagos del mes (gastos fijos / pendientes) y pagos
+  // de resumen de tarjeta de credito — todos crean su movimiento espejo.
+  const egresos = tx.filter(r => r.Tipo === 'Gasto').sort((a, b) => {
+    const da = excelDateToDate(a.Fecha)?.getTime() || 0;
+    const db = excelDateToDate(b.Fecha)?.getTime() || 0;
+    return db - da;
   });
+  const totalEgresos = sum(egresos, 'Importe');
+
   return `
-    <div class="card">
+    <div class="card" style="margin-bottom:18px">
       <div class="section-header">
-        <h3>Movimientos del mes</h3>
-        <button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar movimiento</button>
+        <h3>Ingresos del mes — <span style="color:#3d6a52">${fmtARS(totalIngresos)}</span></h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-success btn-sm" onclick="openIngresoHonorariosLibreModal()">+ Ingreso honorarios</button>
+          <button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar otro</button>
+        </div>
       </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${ingresosFact.length} factura(s) cobradas · ${ingresosManual.length} ingreso(s) manuales</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Subcategoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Fuente</th><th>Cliente / Categoría</th><th>Detalle</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead>
           <tbody>
-            ${sorted.length ? sorted.map(r => `
+            ${ingresos.length ? ingresos.map(mov => `
+              <tr>
+                <td>${escapeHtml(mov.fechaTxt)}</td>
+                <td><span class="badge ${mov.fuente === 'Honorarios' ? 'badge-info' : 'badge-pagada'}">${mov.fuente}</span></td>
+                <td><strong>${escapeHtml(mov.categoria)}</strong></td>
+                <td>${escapeHtml(mov.detalle)}</td>
+                <td>${escapeHtml(mov.medio)}</td>
+                <td class="num" style="color:#3d6a52;font-weight:600">${mov.importeFmt}</td>
+                <td>${mov.actions}</td>
+              </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin ingresos este mes.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <h3>Egresos del mes — <span style="color:#b85f3f">${fmtARS(totalEgresos)}</span></h3>
+        <button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar egreso</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${egresos.length} movimiento(s). Incluye pagos de deuda, aportes a metas, pagos del mes y pagos de resumen de tarjeta.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Categoría</th><th>Subcategoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead>
+          <tbody>
+            ${egresos.length ? egresos.map(r => `
               <tr>
                 <td>${dateText(r.Fecha)}</td>
-                <td>${r.Tipo === 'Ingreso' ? '<span class="badge badge-pagada">Ingreso</span>' : '<span class="badge badge-pendiente">Gasto</span>'}</td>
                 <td>${escapeHtml(r.Categoría || '')}</td>
                 <td>${escapeHtml(r.Subcategoría || '')}</td>
                 <td>${escapeHtml(r.Descripción || '')}</td>
                 <td>${escapeHtml(r.MedioPago || '')}</td>
-                <td class="num" style="color:${r.Tipo==='Ingreso'?'var(--sage)':'var(--warm)'};font-weight:600">${fmtMoney(r.Importe, r.Moneda)}</td>
+                <td class="num" style="color:#b85f3f;font-weight:600">${fmtMoney(r.Importe, r.Moneda)}</td>
                 <td><button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button></td>
-              </tr>`).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">Sin movimientos este mes.</td></tr>'}
+              </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin egresos este mes.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -2502,8 +2553,6 @@ function openSettleDebtModal(rowIndex) {
         ['L' + er, fecha],
         ['M' + er, fd.medio || 'Transferencia']
       ]);
-      // Estado local actualizado para que la UI refleje el cambio aunque el
-      // addRow posterior llegara a fallar.
       const cached = rows.deudas.find(x => Number(x.__rowIndex) === Number(rowIndex));
       if (cached) Object.assign(cached, { Estado: isPay ? 'Pagada' : 'Cobrada', Categoría: fd.categoria, Subcategoría: fd.subcategoria || '', FechaPagoCobro: fecha, MedioPagoCobro: fd.medio || 'Transferencia' });
       const d = new Date((fd.fecha || todayInputValue()) + 'T00:00:00');
