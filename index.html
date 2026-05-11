@@ -93,10 +93,11 @@
     .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin-bottom: 24px; }
     .kpi { background: var(--surface); border-radius: var(--radius); border: 1.5px solid var(--border); box-shadow: var(--shadow); padding: 18px 20px; min-width: 0; overflow: hidden; }
     .kpi-label { font-size: 10px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; line-height: 1.3; word-break: break-word; }
-    .kpi-value { font-family: 'DM Serif Display'; font-size: 28px; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; word-break: break-word; }
+    /* font-size con clamp() para que numeros como $1.234.567 no se partan en dos lineas en mobile */
+    .kpi-value { font-family: 'DM Serif Display'; font-size: clamp(18px, 4.2vw, 28px); color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
     .kpis-cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-    .kpis-cards .kpi-value { font-size: 22px; }
+    .kpis-cards .kpi-value { font-size: clamp(16px, 3.6vw, 22px); }
     .kpi.slate { border-top: 3px solid var(--slate); }
     .kpi.sage  { border-top: 3px solid var(--sage); }
     .kpi.warm  { border-top: 3px solid var(--warm); }
@@ -766,9 +767,6 @@ async function saveGastosWorkbook() {
   if (!gastosWorkbook || !driveItem) return;
   const t = await getToken();
   const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
-  // Sin If-Match: PUT /content reemplaza siempre. Si el archivo esta bloqueado por
-  // coautoria (Excel desktop, app movil u otra pestana abierta), Graph devuelve 412
-  // con code "notAllowed". Lo detectamos y damos un mensaje util en vez del JSON crudo.
   const upload = async () => fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
     method: 'PUT',
     headers: {
@@ -786,9 +784,7 @@ async function saveGastosWorkbook() {
   if (!res.ok) {
     const txt = await res.text();
     const locked = res.status === 412 || res.status === 423 || /notAllowed|resourceLocked|locked|coauth/i.test(txt);
-    if (locked) {
-      throw new Error('Gastos 2026.xlsx parece estar abierto en Excel/OneDrive (escritorio, app movil u otra pestana). Cerralo y reintenta.');
-    }
+    if (locked) throw new Error('Gastos 2026.xlsx parece estar abierto en Excel/OneDrive (escritorio, app movil u otra pestana). Cerralo y reintenta.');
     throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + txt);
   }
   try { driveItem = await res.json(); } catch (_) {}
@@ -951,8 +947,7 @@ function parseHonorarios(range) {
       if (s.startsWith('des')) return 'Desestimada';
       return 'Propia';
     })();
-    // Parser tolerante (parseHonorariosFechaPago) acepta serial Excel, ISO,
-    // DD/MM/YYYY, DD-MM-YYYY o ano corto. Asi el KPI "Cobrado" no vuelve a $0.
+    // Parser tolerante (parseHonorariosFechaPago) acepta serial Excel, ISO, DD/MM/YYYY, etc.
     const fechaPago = parseHonorariosFechaPago(row[10], t[10]);
     return {
       rowExcel: i + 4, id: Number(rawId),
@@ -1065,24 +1060,65 @@ async function appendHonorariosRow(rowData) {
   const cat = rowData.categoriaIngreso || inferCategoriaIngreso(rowData.cliente, rowData.notas, rowData.concepto);
   const tag = cat ? `[CAT:${cat}] ` : '';
   const notasFinal = `${tag}${rowData.notas || ''}`.trim();
+  // Normalizamos fechas a SERIAL numerico (no strings) — Excel/Graph asi siempre
+  // las devuelve interpretables al releer y los KPIs no quedan en cero.
+  const toSerial = v => {
+    if (v == null || v === '') return '';
+    if (typeof v === 'number') return v;
+    const s = String(v).trim();
+    let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) return dateToExcelSerial(`${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return dateToExcelSerial(s.substring(0,10));
+    return v;
+  };
+  const fechaEmisionSerial = toSerial(rowData.fechaEmision);
+  const fechaPagoSerial = toSerial(rowData.fechaPago);
   const arr = [
     id,
     rowData.cliente || '',
     rowData.cuit || '',
     rowData.mes || '',
-    rowData.anio || '',
-    rowData.fechaEmision || '',
+    Number(rowData.anio) || rowData.anio || '',
+    fechaEmisionSerial,
     rowData.nroFactura || '',
     rowData.concepto || '',
     Number(rowData.monto) || 0,
     rowData.estado || 'Pendiente',
-    rowData.fechaPago || '',
+    fechaPagoSerial,
     notasFinal,
     rowData.pdf || '',
     rowData.tipo || 'Propia',
   ];
   await patchHonorariosRow(row, arr);
-  await loadAll();
+  // Optimistic update: agregamos la nueva factura al estado en memoria asi la UI
+  // se actualiza inmediatamente, aunque Graph todavia no haya propagado la lectura.
+  const mesIdx = MESES_HON.indexOf(String(rowData.mes || '').toUpperCase().substring(0,3));
+  const fp = typeof fechaPagoSerial === 'number' ? excelDateToDate(fechaPagoSerial) : null;
+  const fe = typeof fechaEmisionSerial === 'number' ? excelDateToDate(fechaEmisionSerial) : null;
+  facturas.push({
+    rowExcel: row, id,
+    cliente: String(rowData.cliente || '').trim(),
+    cuit: String(rowData.cuit || '').trim(),
+    mesTxt: String(rowData.mes || '').toUpperCase().substring(0,3),
+    anio: Number(rowData.anio) || 0,
+    mesServicio: mesIdx + 1, anioServicio: Number(rowData.anio) || 0,
+    monto: Number(rowData.monto) || 0,
+    estado: rowData.estado || 'Pendiente',
+    tipo: rowData.tipo || 'Propia',
+    fechaEmision: fe,
+    fechaPago: fp,
+    mesPago: fp ? fp.getMonth() + 1 : null,
+    anioPago: fp ? fp.getFullYear() : null,
+    concepto: String(rowData.concepto || '').trim(),
+    nroFactura: String(rowData.nroFactura || '').trim(),
+    notas: notasFinal,
+    pdf: String(rowData.pdf || '').trim(),
+    categoriaIngreso: cat,
+  });
+  populateMonthFilter();
+  renderAll();
+  // loadAll en background — si falla, el optimistic update ya quedo aplicado.
+  try { await loadAll(); } catch (e) { console.warn('loadAll fallo despues de write, queda optimistic:', e); }
   return row;
 }
 async function listFolderChildrenHonorarios(folderPath) {
@@ -1151,8 +1187,6 @@ function openPagoHonorariosModal(rowExcel) {
 async function guardarPagoHonorarios(rowExcel, fechaInput) {
   try {
     const d = new Date(fechaInput + 'T00:00:00');
-    // Escribimos serial numerico (no DD/MM/YYYY) para que la celda al releerse
-    // siempre vuelva interpretable y el KPI "Cobrado" no se vuelva $0.
     const serial = dateToExcelSerial(fechaInput);
     await patchHonorariosCell(`J${rowExcel}`, 'Pagada');
     await patchHonorariosCell(`K${rowExcel}`, serial);
@@ -1283,17 +1317,27 @@ function openIngresoHonorariosLibreModal() {
       showError('En PERITAJE no corresponde usar ingreso compartido. Elegí Facturado o No facturado.');
       return;
     }
+    setStatus('Guardando ingreso manual...', 'wait');
+    const submitBtn = ev.target.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Guardando…'; }
     try {
       await ensureOrigenIngresoRegistered({categoria, nombre: fd.cliente, cuit: fd.cuit || oinfo.cuit || '', recurrente:'NO', auditarPDF:'NO', carpetaPDF:'', prefijoPDF:sanitizePrefijo(fd.cliente, categoria)});
+      // Le pasamos las fechas en formato YYYY-MM-DD para que appendHonorariosRow
+      // las convierta a serial; asi el KPI Cobrado/Devengado las toma siempre.
       await appendHonorariosRow({
         cliente: fd.cliente, cuit: fd.cuit || oinfo.cuit || '', mes: fd.mes, anio: Number(fd.anio),
-        fechaEmision: fd.fechaEmision ? inputDateToDDMMYYYY(fd.fechaEmision) : '', nroFactura: '',
+        fechaEmision: fd.fechaEmision || '', nroFactura: '',
         concepto: fd.concepto || `Ingreso ${fd.mes} ${fd.anio}`, monto: Number(fd.monto),
-        estado: fd.estado || 'Pagada', fechaPago: fd.estado === 'Pagada' ? inputDateToDDMMYYYY(fd.fechaPago || todayInputValue()) : '',
+        estado: fd.estado || 'Pagada', fechaPago: fd.estado === 'Pagada' ? (fd.fechaPago || todayInputValue()) : '',
         notas: fd.notas || '', pdf: '', tipo: fd.tipo || 'Sin Factura', categoriaIngreso: categoria,
       });
-      closeModal(); setStatus('✓ Ingreso manual registrado', 'ok');
-    } catch (e) { showError('No se pudo registrar ingreso manual: ' + e.message); setStatus('Error','err'); }
+      closeModal();
+      setStatus('OK Ingreso manual registrado por ' + fmtARS(Number(fd.monto || 0)), 'ok');
+    } catch (e) {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Registrar'; }
+      showError('No se pudo registrar ingreso manual: ' + (e.message || e));
+      setStatus('Error al guardar ingreso', 'err');
+    }
   });
 }
 window.openIngresoHonorariosLibreModal = openIngresoHonorariosLibreModal;
@@ -1485,11 +1529,20 @@ function honorariosForMonth(y, m) {
   const porCobrar = facturas.filter(f => f.estado === 'Pendiente' && f.tipo !== 'Desestimada' && honorarioEmissionKey(f) <= yyyymm);
   return { devengado, cobrado, porCobrar };
 }
-// Cuotas TC que TERMINAN de pagarse en el mes seleccionado
+// Mes (calendar) en que se paga la ULTIMA cuota de una compra: aplicamos la
+// regla del usuario "el resumen del mes X se paga el 1ro del mes X+1".
+function mesPagoUltimaCuota(mesFinPagoSerial) {
+  const fin = excelDateToDate(mesFinPagoSerial);
+  if (!fin) return null;
+  const d = new Date(fin.getFullYear(), fin.getMonth() + 1, 1);
+  return { y: d.getFullYear(), m: d.getMonth() + 1 };
+}
+function diffMeses(y1, m1, y2, m2) { return (y2 - y1) * 12 + (m2 - m1); }
+// Cuotas TC que TERMINAN de pagarse en el mes seleccionado.
 function cuotasTerminandoEn(y, m) {
   return rows.tarjetas.filter(r => {
-    const fin = excelDateToDate(r.MesFinPago);
-    return fin && fin.getFullYear() === y && (fin.getMonth() + 1) === m && Number(r.CuotasRestantes || 0) > 0;
+    const p = mesPagoUltimaCuota(r.MesFinPago);
+    return p && p.y === y && p.m === m && Number(r.CuotasRestantes || 0) > 0;
   });
 }
 
@@ -1669,7 +1722,6 @@ function ahorroTransaccionesResumen() {
   const arr = rows.transacciones.filter(r => r.Tipo === 'Gasto' && fixedKey(r.Categoría) === fixedKey('Ahorro / Inversiones'));
   let ars = arr.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.Importe||0),0);
   let usd = arr.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.Importe||0),0);
-  // Metas activas suman su MontoActual aunque no haya un movimiento espejo todavia.
   const metasActivas = (rows.ahorro || []).filter(r => String(r.Activa || 'SI').toUpperCase() === 'SI');
   const metasARS = metasActivas.filter(r => String(r.Moneda || 'ARS').toUpperCase() === 'ARS').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
   const metasUSD = metasActivas.filter(r => String(r.Moneda || '').toUpperCase() === 'USD').reduce((a,r)=>a+Number(r.MontoActual || r.MontoAporte || 0),0);
@@ -1729,11 +1781,10 @@ function renderNotices() {
   const { y, m } = selMonth();
   const terminando = cuotasTerminandoEn(y, m);
   const proximas = rows.tarjetas.filter(r => {
-    const fin = excelDateToDate(r.MesFinPago);
-    if (!fin) return false;
-    const yyyymm = fin.getFullYear() * 100 + (fin.getMonth() + 1);
-    const cur = y * 100 + m;
-    return yyyymm > cur && yyyymm <= cur + 2 && Number(r.CuotasRestantes || 0) > 0;
+    const p = mesPagoUltimaCuota(r.MesFinPago);
+    if (!p) return false;
+    const d = diffMeses(y, m, p.y, p.m);
+    return d >= 1 && d <= 2 && Number(r.CuotasRestantes || 0) > 0;
   });
   const warnings = resumenTarjetasWarnings(y, m);
   const out = [];
@@ -2159,7 +2210,7 @@ function renderTarjetasTab() {
         ${cuotas.length ? cuotas.sort((a,b)=>Number(b.MontoCuota)-Number(a.MontoCuota)).map(r => `<tr><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${r.NroCuota || ''}/${r.TotalCuotas || ''}</td><td class="num">${fmtARS(r.MontoCuota)}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas en este mes.</td></tr>'}
       </tbody></table></div></div>
       <div class="card"><div class="card-title">Compras con cuotas pendientes</div><div class="table-wrap"><table><thead><tr><th>Tarjeta</th><th>Descripción</th><th>Cuotas rest.</th><th class="num">Valor cuota</th><th>Termina</th></tr></thead><tbody>
-        ${pendiendoCompras.slice(0, 40).map(r => { const fin = excelDateToDate(r.MesFinPago); const isTerminando = fin && fin.getFullYear() === y && (fin.getMonth() + 1) === m; return `<tr style="${isTerminando ? 'background:var(--sage-light)' : ''}"><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${r.CuotasRestantes}/${r.Cuotas}</td><td class="num">${fmtARS(r.ValorCuota)}</td><td>${dateText(r.MesFinPago)}${isTerminando ? ' 🎉' : ''}</td></tr>`; }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas pendientes 🎉</td></tr>'}
+        ${pendiendoCompras.slice(0, 40).map(r => { const p = mesPagoUltimaCuota(r.MesFinPago); const isTerminando = p && p.y === y && p.m === m; const yaPaga = p && diffMeses(p.y, p.m, y, m) > 0; return `<tr style="${isTerminando ? 'background:var(--sage-light)' : ''}"><td>${cardBadge(r.Tarjeta)}</td><td>${escapeHtml(r.Descripción)}</td><td>${r.CuotasRestantes}/${r.Cuotas}</td><td class="num">${fmtARS(r.ValorCuota)}</td><td>${dateText(r.MesFinPago)}${isTerminando ? ' 🎉 (se paga este mes)' : ''}${yaPaga ? ' · ya pagada' : ''}</td></tr>`; }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">Sin cuotas pendientes 🎉</td></tr>'}
       </tbody></table></div></div>
     </div>
     <details class="card" style="margin-top:18px"><summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Detalle editable de compras con tarjeta</summary>
@@ -2349,14 +2400,9 @@ function drawCategoriasCharts() {
 // ── TAB: MOVIMIENTOS ─────────────────────────────────────────────────────
 function renderMovimientosTab() {
   const { y, m, tx } = selMonth();
-
-  // INGRESOS = facturas honorarios cobradas en el mes (fechaPago) + transacciones
-  // Tipo='Ingreso'. Las facturas no se duplican como movimiento porque viven en
-  // el Excel de honorarios — las mostramos directo desde ese array.
   const ingresosFact = facturas
     .filter(f => f.estado === 'Pagada' && f.anioPago === y && f.mesPago === m && f.tipo !== 'Desestimada')
     .map(f => ({
-      kind: 'factura',
       sortMs: f.fechaPago ? f.fechaPago.getTime() : 0,
       fechaTxt: f.fechaPago ? f.fechaPago.toLocaleDateString('es-AR') : '',
       fuente: 'Honorarios',
@@ -2368,7 +2414,6 @@ function renderMovimientosTab() {
       actions: `<button class="btn btn-outline btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pendiente')">Revertir cobro</button>`
     }));
   const ingresosManual = tx.filter(r => r.Tipo === 'Ingreso').map(r => ({
-    kind: 'manual',
     sortMs: excelDateToDate(r.Fecha)?.getTime() || 0,
     fechaTxt: dateText(r.Fecha),
     fuente: 'Manual',
@@ -2382,9 +2427,6 @@ function renderMovimientosTab() {
   const ingresos = [...ingresosFact, ...ingresosManual].sort((a, b) => b.sortMs - a.sortMs);
   const totalIngresos = ingresos.reduce((a, x) => a + x.monto, 0);
 
-  // EGRESOS = todos los Tipo='Gasto'. Esto ya incluye automaticamente: pagos de
-  // deuda, aportes a metas, pagos del mes (gastos fijos / pendientes) y pagos
-  // de resumen de tarjeta de credito — todos crean su movimiento espejo.
   const egresos = tx.filter(r => r.Tipo === 'Gasto').sort((a, b) => {
     const da = excelDateToDate(a.Fecha)?.getTime() || 0;
     const db = excelDateToDate(b.Fecha)?.getTime() || 0;
@@ -2546,28 +2588,14 @@ function openSettleDebtModal(rowIndex) {
     try {
       const er = excelRowFromIndex('deudas', rowIndex);
       const fecha = dateToExcelSerial(fd.fecha || todayInputValue());
-      await patchCells(SHEETS.deudas, [
-        ['H' + er, isPay ? 'Pagada' : 'Cobrada'],
-        ['J' + er, fd.categoria],
-        ['K' + er, fd.subcategoria || ''],
-        ['L' + er, fecha],
-        ['M' + er, fd.medio || 'Transferencia']
-      ]);
+      await patchCells(SHEETS.deudas, [['H' + er, isPay ? 'Pagada' : 'Cobrada'], ['J' + er, fd.categoria], ['K' + er, fd.subcategoria || ''], ['L' + er, fecha], ['M' + er, fd.medio || 'Transferencia']]);
       const cached = rows.deudas.find(x => Number(x.__rowIndex) === Number(rowIndex));
       if (cached) Object.assign(cached, { Estado: isPay ? 'Pagada' : 'Cobrada', Categoría: fd.categoria, Subcategoría: fd.subcategoria || '', FechaPagoCobro: fecha, MedioPagoCobro: fd.medio || 'Transferencia' });
       const d = new Date((fd.fecha || todayInputValue()) + 'T00:00:00');
       try {
-        await addRow(TABLES.transacciones, [
-          nextId(rows.transacciones), fecha, isPay ? 'Gasto' : 'Ingreso',
-          isPay ? fd.categoria : 'Otros',
-          (isPay ? 'Pago deuda ' : 'Cobro deuda ') + r.Contraparte,
-          Number(fd.monto), r.Moneda || 'ARS', fd.medio || 'Transferencia',
-          'Desde panel de deudas', d.getMonth() + 1, d.getFullYear(),
-          isPay ? (fd.subcategoria || '') : ''
-        ]);
+        await addRow(TABLES.transacciones, [nextId(rows.transacciones), fecha, isPay ? 'Gasto' : 'Ingreso', isPay ? fd.categoria : 'Otros', (isPay ? 'Pago deuda ' : 'Cobro deuda ') + r.Contraparte, Number(fd.monto), r.Moneda || 'ARS', fd.medio || 'Transferencia', 'Desde panel de deudas', d.getMonth() + 1, d.getFullYear(), isPay ? (fd.subcategoria || '') : '']);
       } catch (txErr) {
-        console.warn('Deuda marcada pero no se pudo crear movimiento espejo:', txErr);
-        showError('Deuda marcada como ' + (isPay ? 'pagada' : 'cobrada') + ', pero no se creo el movimiento en transacciones: ' + txErr.message);
+        showError('Deuda marcada como ' + (isPay ? 'pagada' : 'cobrada') + ', pero no se creo el movimiento espejo: ' + txErr.message);
       }
       closeModal();
       await loadAll();
