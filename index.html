@@ -32,7 +32,7 @@
     })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet" />
 
@@ -310,14 +310,14 @@ const TABLES = {
   deudas: 'tbl_Deudas', inversiones: 'tbl_Inversiones', ahorro: 'tbl_Ahorro',
   fijos: 'tbl_GastosFijos', pagos: 'tbl_PagosPendientes',
   tarjetasConfig: 'tbl_TarjetasAdmin', resumenesTC: 'tbl_ResumenesTarjeta',
-  origenesIngresos: 'tbl_OrigenesIngresos'
+  origenesIngresos: 'tbl_OrigenesIngresos', warningsDismissed: 'tbl_WarningsDismissed'
 };
 const SHEETS = {
   transacciones: 'DATA_Transacciones', tarjetas: 'DATA_Tarjetas', cuotas: 'DATA_CuotasMensuales',
   deudas: 'DATA_Deudas', inversiones: 'DATA_Inversiones', ahorro: 'DATA_Ahorro',
   fijos: 'DATA_GastosFijos', pagos: 'DATA_PagosPendientes',
   tarjetasConfig: 'DATA_TarjetasConfig', resumenesTC: 'DATA_ResumenesTarjeta',
-  origenesIngresos: 'DATA_OrigenesIngresos'
+  origenesIngresos: 'DATA_OrigenesIngresos', warningsDismissed: 'DATA_WarningsDismissed'
 };
 const MESES_HON = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
 const MES_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -488,9 +488,25 @@ async function ensureOrigenIngresoRegistered({categoria, nombre, cuit='', recurr
 // Formato esperado: PREFIJO_AAAAMMDD_MES AÑO.pdf. El prefijo se valida contra la tabla de orígenes.
 const PDF_NAME_REGEX = /^([A-Z0-9]{2,24})_(\d{8})_(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC) (\d{4})\.pdf$/i;
 
-// Paleta de colores Honorarios para charts
 const COLORS_PALETTE = ['#6b8cae','#7aa68a','#9b86a8','#c4a882','#d4856a','#8fb3c8','#a8c5b0','#b7a4c2','#d4bfa0','#dfa28a'];
 const CARD_COLORS = { 'Santa Fe PAPA': '#7aa68a', 'Macro PAPA': '#1f5fa8', 'Macro FEDE': '#1f5fa8', 'BBVA FEDE': '#49a6d8' };
+if (typeof Chart !== 'undefined' && typeof ChartDataLabels !== 'undefined') {
+  Chart.register(ChartDataLabels);
+  Chart.defaults.plugins.datalabels = { display: false };
+}
+function donutOptions(extra = {}) {
+  return {
+    responsive: true, maintainAspectRatio: false, cutout: '62%',
+    plugins: {
+      legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 }, padding: 8 } },
+      datalabels: {
+        display: ctx => { const d = ctx.chart.data.datasets[0].data || []; const t = d.reduce((a,v)=>a+Number(v||0),0); const v = Number(d[ctx.dataIndex] || 0); return t > 0 && v / t >= 0.04; },
+        color: '#fff', font: { weight: '600', size: 11, family: 'DM Sans' },
+        formatter: (value, ctx) => { const d = ctx.chart.data.datasets[0].data || []; const t = d.reduce((a,v)=>a+Number(v||0),0); return t ? Math.round((value / t) * 100) + '%' : ''; }
+      }
+    }, ...extra
+  };
+}
 
 // ╔════════════════════════════════════════════════════════════════════════╗
 // ║ STATE                                                                   ║
@@ -597,6 +613,7 @@ function login() {
 }
 async function logout() {
   if (!confirm('¿Cerrar sesión?')) return;
+  try { if (sessionId && driveItem) await gFetch(`/me/drive/items/${driveItem.id}/workbook/closeSession`, { method: 'POST' }); } catch (e) {}
   sessionStorage.clear();
   msalApp.logoutRedirect({ postLogoutRedirectUri: window.location.origin + window.location.pathname });
 }
@@ -636,6 +653,7 @@ const EXPECTED_HEADERS = {
   tarjetasConfig: ['ID','Tarjeta','Banco','Titular','DiaCierre','DiaVencimiento','Limite','Activa','Color','Notas'],
   resumenesTC: ['ID','Año','Mes','Tarjeta','MontoReal','EstadoPago','FechaPago','MedioPago','Notas'],
   origenesIngresos: ['IDOrigen','CategoriaIngreso','NombreOrigen','CUIT','Recurrente','Activo','AuditarPDF','CarpetaPDF','PrefijoPDF','Notas'],
+  warningsDismissed: ['ID','Año','Mes','Tarjeta','FechaDescarte','Notas'],
 };
 
 function keyFromSheetName(sheetName) {
@@ -713,143 +731,83 @@ function a1Parts(address) {
 }
 
 async function openWorkbook() {
-  sessionId = null; // El Excel de gastos ya no usa workbook sessions.
-  if (!window.XLSX) throw new Error('No se cargó la librería XLSX. Refrescá la página.');
   driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`);
-  const t = await getToken();
-  const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
-    headers: { Authorization: 'Bearer ' + t }
+  const s = await gFetch(`/me/drive/items/${driveItem.id}/workbook/createSession`, {
+    method: 'POST', body: JSON.stringify({ persistChanges: true })
   });
-  if (!res.ok) throw new Error('No se pudo descargar el Excel de gastos: ' + res.status + ' ' + await res.text());
-  const ab = await res.arrayBuffer();
-  gastosWorkbook = XLSX.read(ab, {type:'array', cellDates:false});
-  // Asegurar hojas mínimas. No depende de la API /workbook de Graph.
-  Object.keys(SHEETS).forEach(k => { if (EXPECTED_HEADERS[k]) ensureSheetForKey(k); });
+  sessionId = s.id;
+  // Health check: verificar que las tablas existan, dar mensaje claro si falta alguna
+  const required = Object.values(TABLES);
+  const missing = [];
+  for (const t of required) {
+    try { await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(t)}/range?$select=address`); }
+    catch (e) { if (/404|ItemNotFound|itemNotFound/.test(String(e.message))) missing.push(t); }
+  }
+  if (missing.length) throw new Error('Faltan tablas en Gastos 2026.xlsx: ' + missing.join(', ') + '. Subi la version reconstruida del Excel.');
 }
 
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
-async function saveGastosWorkbook() {
-  if (!gastosWorkbook || !driveItem) return;
-  const wbout = XLSX.write(gastosWorkbook, {bookType:'xlsx', type:'array'});
-
-  async function uploadWithFreshToken() {
-    const token = await getToken();
-    return fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${driveItem.id}/content`, {
-      method: 'PUT',
-      headers: {
-        Authorization: 'Bearer ' + token,
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Cache-Control': 'no-cache'
-      },
-      body: wbout,
-      cache: 'no-store'
-    });
-  }
-
-  // IMPORTANTE: no usar If-Match. En OneDrive ese header dispara errores 412
-  // cuando el eTag cambia por sincronización entre la lectura y el guardado.
-  let res = await uploadWithFreshToken();
-
-  if (!res.ok && [409, 412, 423, 429, 503].includes(res.status)) {
-    // OneDrive puede quedar unos segundos sincronizando o bloqueado por Excel escritorio.
-    // Rebuscamos el item y reintentamos una vez con token nuevo y sin eTag.
-    await sleep(700);
-    try { driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`); } catch (_) {}
-    res = await uploadWithFreshToken();
-  }
-
-  if (!res.ok) throw new Error('No se pudo guardar el Excel de gastos: ' + res.status + ' ' + await res.text());
-
-  try { driveItem = await res.json(); }
-  catch (_) { driveItem = await gFetch(`/me/drive/root:/${encodePath(CONFIG.excelPath)}:`); }
-}
+async function saveGastosWorkbook() { /* no-op tras refactor session */ }
 
 async function readTable(name) {
-  const key = tableKeyFromName(name);
-  if (!key) return { headers: [], data: [], address: '' };
-  const sheetName = SHEETS[key];
-  const ws = ensureSheetForKey(key);
-  const aoa = sheetAoa(sheetName);
-  const fallbackHeaders = EXPECTED_HEADERS[key] || [];
-  let headers = (aoa[0] || []).map(h => String(h || '').trim());
-  if (!headers.filter(Boolean).length) {
-    headers = fallbackHeaders;
-    XLSX.utils.sheet_add_aoa(ws, [headers], {origin:'A1'});
-  }
-  // Usar SIEMPRE el esquema esperado cuando existe.
-  // Esto evita que columnas auxiliares/visuales del Excel se interpreten como datos
-  // (por ejemplo, en DATA_Inversiones aparecía una columna auxiliar y corría los campos).
-  const usefulCols = fallbackHeaders.length || Math.max(headers.filter(Boolean).length, 1);
-  headers = fallbackHeaders.length ? fallbackHeaders.slice(0, usefulCols) : headers.slice(0, usefulCols);
-  const data = aoa.slice(1)
-    .map((row, i) => ({row: (row || []).slice(0, usefulCols), originalIdx: i + 1}))
-    .filter(({row}) => !aoaIsEmptyRow(row))
-    .map(({row, originalIdx}) => {
-      const o = {__rowIndex: originalIdx, __address: `${sheetName}!A1:${XLSX.utils.encode_cell({r: Math.max(aoa.length-1,0), c: usefulCols-1})}`};
-      headers.forEach((h,j) => { if (h) o[h] = row[j]; });
-      return o;
-    });
-  const endCell = XLSX.utils.encode_cell({r: Math.max(aoa.length-1, 0), c: usefulCols-1});
-  return { headers, data, address: `${sheetName}!A1:${endCell}` };
+  try {
+    const r = await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(name)}/range?$select=address,values`);
+    const values = r.values || [];
+    const headers = (values[0] || []).map(h => String(h == null ? '' : h).trim());
+    const data = values.slice(1)
+      .map((row, i) => ({ row: row || [], originalIdx: i + 1 }))
+      .filter(({ row }) => row.some(x => x !== null && x !== '' && x !== undefined))
+      .map(({ row, originalIdx }) => {
+        const o = { __rowIndex: originalIdx, __address: r.address };
+        headers.forEach((h, j) => { if (h) o[h] = row[j]; });
+        return o;
+      });
+    return { headers, data, address: r.address };
+  } catch (e) { console.warn(`readTable(${name}):`, e.message); return { headers: [], data: [], address: '' }; }
 }
 
 async function patchRange(sheet, address, values2d) {
-  const key = keyFromSheetName(sheet);
-  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
-  const parts = a1Parts(address);
-  for (let r=0; r<values2d.length; r++) {
-    for (let c=0; c<(values2d[r] || []).length; c++) {
-      setCell(ws, parts.startRow + r, parts.startColNum + c, values2d[r][c]);
-    }
-  }
-  await saveGastosWorkbook();
+  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${address}')`, {
+    method: 'PATCH', body: JSON.stringify({ values: values2d })
+  });
 }
 
 async function addRow(tableName, values) {
-  const key = tableKeyFromName(tableName);
-  if (!key) throw new Error('Tabla no configurada: ' + tableName);
-  const sheetName = SHEETS[key];
-  const ws = ensureSheetForKey(key);
-  const headers = EXPECTED_HEADERS[key] || [];
-  const aoa = sheetAoa(sheetName);
-  const colCount = Math.max(headers.length, (aoa[0] || []).filter(x=>x!=='').length, values.length);
-  if (values.length < colCount) values = values.concat(Array(colCount - values.length).fill(''));
-  if (values.length > colCount) values = values.slice(0, colCount);
-  let rowIndex0 = Math.max(aoa.length, 1);
-  // Si hay filas totalmente vacías al final o una única fila vacía de datos, reutilizarla.
-  for (let i=1; i<aoa.length; i++) {
-    const row = (aoa[i] || []).slice(0, colCount);
-    if (aoaIsEmptyRow(row)) { rowIndex0 = i; break; }
+  // Asegurar numero correcto de columnas (Graph 400 InvalidArgument si difiere)
+  const key = Object.entries(TABLES).find(([,v]) => v === tableName)?.[0];
+  const expectedCols = (EXPECTED_HEADERS[key] || []).length;
+  if (expectedCols && values.length !== expectedCols) {
+    values = values.length < expectedCols ? [...values, ...Array(expectedCols - values.length).fill('')] : values.slice(0, expectedCols);
   }
-  XLSX.utils.sheet_add_aoa(ws, [values], {origin:{r: rowIndex0, c:0}});
-  updateRef(ws, rowIndex0, colCount-1);
-  await saveGastosWorkbook();
+  await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tableName)}/rows/add`, {
+    method: 'POST', body: JSON.stringify({ values: [values] })
+  });
+}
+
+async function addRowsBatch(adds) {
+  const grouped = {};
+  for (const a of adds) {
+    const key = Object.entries(TABLES).find(([,v]) => v === a.table)?.[0];
+    const expectedCols = (EXPECTED_HEADERS[key] || []).length;
+    let v = a.values;
+    if (expectedCols && v.length !== expectedCols) v = v.length < expectedCols ? [...v, ...Array(expectedCols - v.length).fill('')] : v.slice(0, expectedCols);
+    if (!grouped[a.table]) grouped[a.table] = [];
+    grouped[a.table].push(v);
+  }
+  for (const [tn, vals] of Object.entries(grouped)) {
+    await gFetch(`/me/drive/items/${driveItem.id}/workbook/tables/${encodeURIComponent(tn)}/rows/add`, {
+      method: 'POST', body: JSON.stringify({ values: vals })
+    });
+  }
 }
 
 async function writeFirstBlankDataRowIfAvailable(key, values) {
-  const sheet = SHEETS[key];
-  if (!sheet) return false;
-  const ws = ensureSheetForKey(key);
-  const aoa = sheetAoa(sheet);
-  const colCount = Math.max((EXPECTED_HEADERS[key] || []).length, values.length);
-  for (let i=1; i<aoa.length; i++) {
-    const row = (aoa[i] || []).slice(0, colCount);
-    if (aoaIsEmptyRow(row)) {
-      XLSX.utils.sheet_add_aoa(ws, [values], {origin:{r:i, c:0}});
-      await saveGastosWorkbook();
-      return true;
-    }
-  }
-  return false;
+  try { await addRow(TABLES[key], values); return true; } catch (e) { return false; }
 }
 
 async function patchCell(sheet, address, value) {
-  const key = keyFromSheetName(sheet);
-  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
-  const parts = a1Parts(address);
-  setCell(ws, parts.startRow, parts.startColNum, value);
-  await saveGastosWorkbook();
+  await gFetch(`/me/drive/items/${driveItem.id}/workbook/worksheets/${encodeURIComponent(sheet)}/range(address='${address}')`, {
+    method: 'PATCH', body: JSON.stringify({ values: [[value]] })
+  });
 }
 
 function parseStartRow(address) {
@@ -1361,7 +1319,7 @@ async function loadAll() {
 
   const now = new Date();
   $('#headerSub').textContent = `Federico Ciancio · Actualizado ${now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}`;
-  if (workbookOk) setStatus('✓ Sincronizado', 'ok');
+  if (workbookOk && rows.transacciones.length > 0) setStatus('✓ Sincronizado', 'ok');
   else if (facturas.length > 0) setStatus('Parcial: solo honorarios', 'err');
   else setStatus('Error al cargar', 'err');
 }
@@ -1519,8 +1477,19 @@ function resumenTarjetasMes(y, m) {
   });
 }
 function resumenTarjetasWarnings(y, m) {
-  return resumenTarjetasMes(y, m).filter(x => x.alerta);
+  const dismissed = (rows.warningsDismissed || []).filter(r => Number(r.Año) === y && Number(r.Mes) === m).map(r => fixedKey(r.Tarjeta));
+  return resumenTarjetasMes(y, m).filter(x => x.alerta && !dismissed.includes(fixedKey(x.tarjeta)));
 }
+window.dismissWarning = async function(tarjeta, y, m) {
+  setStatus('Descartando aviso...', 'wait');
+  try {
+    await addRow(TABLES.warningsDismissed, [nextId(rows.warningsDismissed || []), y, m, tarjeta, dateToExcelSerial(todayInputValue()), 'Descartado por usuario']);
+    if (!rows.warningsDismissed) rows.warningsDismissed = [];
+    rows.warningsDismissed.push({ __rowIndex: (rows.warningsDismissed.length + 1), ID: 0, Año: y, Mes: m, Tarjeta: tarjeta });
+    renderNotices();
+    setStatus('OK Aviso descartado', 'ok');
+  } catch (e) { showError('No se pudo descartar el aviso: ' + e.message); setStatus('Error', 'err'); }
+};
 function pagoRowIndexToExcelRow(rowIndex) {
   return parseStartRow(raw.pagos.address) + Number(rowIndex);
 }
@@ -1676,8 +1645,9 @@ function renderNotices() {
   const out = [];
   if (warnings.length) {
     warnings.forEach(w => {
-      out.push(`<div class="notice warn">
+      out.push(`<div class="notice warn" style="justify-content:space-between">
         <div><strong>⚠ Ojo:</strong> el resumen que llegó de la tarjeta <strong>${escapeHtml(w.tarjeta)}</strong> varía en <strong>${fmtARS(Math.abs(w.delta))}</strong> respecto a lo registrado por planilla. Revisá si faltan gastos por cargar.</div>
+        <button class="btn btn-outline btn-sm" onclick="dismissWarning('${escapeHtml(w.tarjeta)}', ${y}, ${m})">OK, descartar</button>
       </div>`);
     });
   }
@@ -1692,9 +1662,13 @@ function renderNotices() {
     </div>`);
   }
   if (proximas.length) {
+    const totalProx = proximas.reduce((a, r) => a + Number(r.ValorCuota || 0), 0);
     out.push(`<div class="notice info">
-      <strong>📅 Cuotas que terminan en los próximos 2 meses (${proximas.length}):</strong>
-      ${proximas.map(r => `${escapeHtml(r.Descripción)} (${dateText(r.MesFinPago)})`).join(' · ')}
+      <div>
+        <strong>📅 Cuotas que terminan en los próximos 2 meses (${proximas.length}):</strong>
+        ${proximas.map(r => `${escapeHtml(r.Descripción)} (${dateText(r.MesFinPago)}, ${fmtARS(Number(r.ValorCuota || 0))})`).join(' · ')}
+        <div style="margin-top:6px;font-size:12px">Vas a dejar de pagar <strong>${fmtARS(totalProx)}</strong>/mes adicionales en los próximos 2 meses.</div>
+      </div>
     </div>`);
   }
   $('#noticeArea').innerHTML = out.join('');
@@ -1765,12 +1739,7 @@ function drawResumenCharts() {
   const gs = groupSum(gastosCategorizadosDelMes(), 'Categoría', 'Importe').slice(0, 8);
   const donut = document.getElementById('summaryDonut');
   if (donut) {
-    charts.donut = new Chart(donut, {
-      type: 'doughnut',
-      data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
-        plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
-    });
+    charts.donut = new Chart(donut, { type: 'doughnut', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE, borderWidth: 1.5, borderColor: '#fff' }] }, options: donutOptions() });
   }
   const { porCobrar } = honorariosForMonth(y, m);
   const el = document.getElementById('pendCobroResumen');
@@ -2269,11 +2238,7 @@ function drawCategoriasCharts() {
     renderEmptyChartMessage('catDonut', 'Sin gastos imputados para el mes seleccionado.');
     renderEmptyChartMessage('catBars', 'Sin gastos imputados para el mes seleccionado.');
   } else {
-    charts.catDonut = new Chart(document.getElementById('catDonut'), {
-      type: 'doughnut',
-      data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'right', labels: { color: '#2c2825', boxWidth: 10, font: { size: 11 } } } } }
-    });
+    charts.catDonut = new Chart(document.getElementById('catDonut'), { type: 'doughnut', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: COLORS_PALETTE.concat(COLORS_PALETTE, COLORS_PALETTE), borderWidth: 1.5, borderColor: '#fff' }] }, options: donutOptions() });
     charts.catBars = new Chart(document.getElementById('catBars'), {
       type: 'bar', data: { labels: gs.map(x => x.key), datasets: [{ data: gs.map(x => x.value), backgroundColor: gs.map((_, i) => COLORS_PALETTE[i % COLORS_PALETTE.length]), borderRadius: 4 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#b0a89e', font: { size: 10 }, callback: v => fmtARS(v) }, grid: { color: '#e8e4dc' } }, y: { ticks: { color: '#b0a89e', font: { size: 10 } }, grid: { display: false } } } }
@@ -2284,39 +2249,34 @@ function drawCategoriasCharts() {
   $('#subcatTable').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Categoría / Subcategoría</th><th class="num">Monto</th><th class="num">% total</th></tr></thead><tbody>${sub.map(x => `<tr><td>${escapeHtml(x.key)}</td><td class="num">${fmtARS(x.value)}</td><td class="num">${total ? fmtPct(x.value / total * 100) : '—'}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px">Sin subcategorías.</td></tr>'}</tbody></table></div>`;
 }
 
-// ── TAB: MOVIMIENTOS ─────────────────────────────────────────────────────
 function renderMovimientosTab() {
-  const { tx } = selMonth();
-  const sorted = [...tx].sort((a, b) => {
-    const da = excelDateToDate(a.Fecha), db = excelDateToDate(b.Fecha);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-  });
-  return `
-    <div class="card">
-      <div class="section-header">
-        <h3>Movimientos del mes</h3>
-        <button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar movimiento</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Subcategoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead>
-          <tbody>
-            ${sorted.length ? sorted.map(r => `
-              <tr>
-                <td>${dateText(r.Fecha)}</td>
-                <td>${r.Tipo === 'Ingreso' ? '<span class="badge badge-pagada">Ingreso</span>' : '<span class="badge badge-pendiente">Gasto</span>'}</td>
-                <td>${escapeHtml(r.Categoría || '')}</td>
-                <td>${escapeHtml(r.Subcategoría || '')}</td>
-                <td>${escapeHtml(r.Descripción || '')}</td>
-                <td>${escapeHtml(r.MedioPago || '')}</td>
-                <td class="num" style="color:${r.Tipo==='Ingreso'?'var(--sage)':'var(--warm)'};font-weight:600">${fmtMoney(r.Importe, r.Moneda)}</td>
-                <td><button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button></td>
-              </tr>`).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">Sin movimientos este mes.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
+  const { y, m, tx } = selMonth();
+  const ingF = facturas.filter(f => f.estado === 'Pagada' && f.anioPago === y && f.mesPago === m && f.tipo !== 'Desestimada').map(f => ({ sortMs: f.fechaPago ? f.fechaPago.getTime() : 0, fechaTxt: f.fechaPago ? f.fechaPago.toLocaleDateString('es-AR') : '', fuente: 'Honorarios', categoria: f.cliente, detalle: (f.concepto || ('Honorarios ' + f.mesTxt + ' ' + f.anioServicio)) + (f.nroFactura ? ' · ' + f.nroFactura : ''), medio: '', importeFmt: fmtARS(f.monto), monto: Number(f.monto || 0), actions: `<button class="btn btn-outline btn-sm" onclick="openEditFechaPagoHonorarios(${f.rowExcel})">Editar fecha</button> <button class="btn btn-outline btn-sm" onclick="marcarFacturaHonorarios(${f.rowExcel}, 'Pendiente')">Revertir</button>` }));
+  const ingM = tx.filter(r => r.Tipo === 'Ingreso').map(r => ({ sortMs: excelDateToDate(r.Fecha)?.getTime() || 0, fechaTxt: dateText(r.Fecha), fuente: 'Manual', categoria: r.Categoría || '', detalle: r.Descripción || '', medio: r.MedioPago || '', importeFmt: fmtMoney(r.Importe, r.Moneda), monto: Number(r.Importe || 0), actions: `<button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button>` }));
+  const ing = [...ingF, ...ingM].sort((a, b) => b.sortMs - a.sortMs);
+  const totIng = ing.reduce((a, x) => a + x.monto, 0);
+  const eg = tx.filter(r => r.Tipo === 'Gasto').sort((a, b) => (excelDateToDate(b.Fecha)?.getTime() || 0) - (excelDateToDate(a.Fecha)?.getTime() || 0));
+  const totEg = sum(eg, 'Importe');
+  return `<div class="card" style="margin-bottom:18px"><div class="section-header"><h3>Ingresos del mes — <span style="color:#3d6a52">${fmtARS(totIng)}</span></h3><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openIngresoHonorariosLibreModal()">+ Ingreso honorarios</button><button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar otro</button></div></div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${ingF.length} factura(s) cobradas · ${ingM.length} ingreso(s) manuales</div><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Fuente</th><th>Cliente / Categoría</th><th>Detalle</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead><tbody>${ing.length ? ing.map(mov => `<tr><td>${escapeHtml(mov.fechaTxt)}</td><td><span class="badge ${mov.fuente === 'Honorarios' ? 'badge-info' : 'badge-pagada'}">${mov.fuente}</span></td><td><strong>${escapeHtml(mov.categoria)}</strong></td><td>${escapeHtml(mov.detalle)}</td><td>${escapeHtml(mov.medio)}</td><td class="num" style="color:#3d6a52;font-weight:600">${mov.importeFmt}</td><td>${mov.actions}</td></tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin ingresos este mes.</td></tr>'}</tbody></table></div></div><div class="card"><div class="section-header"><h3>Egresos del mes — <span style="color:#b85f3f">${fmtARS(totEg)}</span></h3><button class="btn btn-cta btn-sm" onclick="openTxModal()">+ Cargar egreso</button></div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${eg.length} movimiento(s). Incluye pagos de deuda, aportes a metas, pagos del mes y resumen TC.</div><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Categoría</th><th>Subcategoría</th><th>Descripción</th><th>Medio</th><th class="num">Importe</th><th>Acción</th></tr></thead><tbody>${eg.length ? eg.map(r => `<tr><td>${dateText(r.Fecha)}</td><td>${escapeHtml(r.Categoría || '')}</td><td>${escapeHtml(r.Subcategoría || '')}</td><td>${escapeHtml(r.Descripción || '')}</td><td>${escapeHtml(r.MedioPago || '')}</td><td class="num" style="color:#b85f3f;font-weight:600">${fmtMoney(r.Importe, r.Moneda)}</td><td><button class="btn btn-outline btn-sm" onclick="openMovimientoEdit(${r.__rowIndex})">Editar</button> <button class="btn btn-danger btn-sm" onclick="deleteMovimiento(${r.__rowIndex})">Eliminar</button></td></tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Sin egresos este mes.</td></tr>'}</tbody></table></div></div>`;
 }
+window.openEditFechaPagoHonorarios = function(rowExcel) {
+  const f = facturas.find(x => Number(x.rowExcel) === Number(rowExcel));
+  if (!f) return;
+  const current = f.fechaPago ? dateToInputValueLocal(f.fechaPago) : todayInputValue();
+  $('#modalRoot').innerHTML = `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><h2>Editar fecha de cobro</h2><div class="modal-sub">${escapeHtml(f.cliente)} · ${escapeHtml(f.concepto || '')} · ${fmtARS(f.monto)}</div><form id="editFechaForm"><div class="form-group"><label>Fecha real de cobro</label><input type="date" name="fecha" value="${current}" required></div><div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-success">Guardar</button></div></form></div></div>`;
+  $('#editFechaForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    try {
+      const serial = dateToExcelSerial(fd.fecha);
+      await patchHonorariosCell(`K${rowExcel}`, serial);
+      const d = new Date(fd.fecha + 'T00:00:00');
+      facturas = facturas.map(x => Number(x.rowExcel) === Number(rowExcel) ? { ...x, fechaPago: d, mesPago: d.getMonth() + 1, anioPago: d.getFullYear() } : x);
+      closeModal(); renderAll();
+      setStatus('OK Fecha actualizada', 'ok');
+    } catch (e) { showError('No se pudo actualizar: ' + e.message); setStatus('Error', 'err'); }
+  });
+};
 
 // ── TAB: OTROS (DEUDAS / INVERSIONES / AHORRO) ───────────────────────────
 function renderOtrosTab() {
@@ -2358,13 +2318,7 @@ function renderOtrosTab() {
 function closeModal() { $('#modalRoot').innerHTML = ''; }
 
 async function patchCells(sheet, updates) {
-  const key = keyFromSheetName(sheet);
-  const ws = key ? ensureSheetForKey(key) : (gastosWorkbook.Sheets[sheet] || (gastosWorkbook.SheetNames.push(sheet), gastosWorkbook.Sheets[sheet] = XLSX.utils.aoa_to_sheet([[]])));
-  for (const [addr, val] of updates) {
-    const parts = a1Parts(addr);
-    setCell(ws, parts.startRow, parts.startColNum, val);
-  }
-  await saveGastosWorkbook();
+  for (const [addr, val] of updates) await patchCell(sheet, addr, val);
 }
 function excelRowFromIndex(key, rowIndex) { return parseStartRow(raw[key].address) + Number(rowIndex); }
 async function addAporteToMeta(rowIndex, monto, fechaInput) {
@@ -2588,7 +2542,11 @@ function openSimpleModal(kind, medioInicial) {
           <div class="form-group"><label>Descripción</label><input type="text" name="descripcion" placeholder="Ej: Mueble, Pago resumen BBVA, Aporte viaje"></div>
           <div class="form-row">
             <div class="form-group"><label>Importe</label><input type="number" name="importe" step="0.01" required></div>
-            <div class="form-group"><label>Moneda</label><select name="moneda"><option>ARS</option><option>USD</option></select></div>
+            <div class="form-group"><label>Moneda</label><select name="moneda" onchange="document.getElementById('cotizGroup').style.display = this.value === 'USD' ? '' : 'none'; refreshCotizCalc();"><option>ARS</option><option>USD</option></select></div>
+          </div>
+          <div class="form-row" id="cotizGroup" style="display:none">
+            <div class="form-group"><label>Cotización (ARS por USD)</label><input type="number" name="cotizacion" step="0.01" placeholder="Ej: 1441" oninput="refreshCotizCalc()"></div>
+            <div class="form-group"><label>Pesos efectivamente gastados</label><div id="cotizCalc" style="padding:9px 13px;border-radius:var(--radius-sm);background:var(--surface2);font-family:'DM Serif Display';font-size:18px;color:var(--text-soft)">$ —</div></div>
           </div>
           <div class="form-group"><label>Notas (opcional)</label><input type="text" name="notas"></div>
           <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="closeModal()">Cancelar</button><button type="submit" class="btn btn-success">Guardar</button></div>
@@ -2601,7 +2559,23 @@ function openSimpleModal(kind, medioInicial) {
     const fd = Object.fromEntries(new FormData(e.target));
     const d = new Date(fd.fecha + 'T00:00:00');
     const desc = fd.descripcion || (fd.categoria === 'Pago tarjeta de crédito' && fd.tarjeta ? ('Pago resumen ' + fd.tarjeta) : (fd.categoria === 'Ahorro / Inversiones' ? 'Aporte ahorro / inversión' : ''));
-    const row = [nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria, desc, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '', d.getMonth() + 1, d.getFullYear(), fd.subcategoria || ''];
+    let row;
+    let extraAhorroUSD = null;
+    // Si es USD + Gasto, registramos en pesos (importe * cotizacion) y guardamos
+    // la cantidad de USD para que aparezca en ahorro/inversiones.
+    if (kind === 'Gasto' && fd.moneda === 'USD' && Number(fd.cotizacion || 0) > 0) {
+      const usdQty = Number(fd.importe || 0);
+      const cotiz = Number(fd.cotizacion);
+      const arsSpent = usdQty * cotiz;
+      const notaUSD = `Compra USD ${usdQty} @ ${fmtARS(cotiz)}/USD. ${fd.notas || ''}`.trim();
+      row = [nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria, desc || `Compra USD ${usdQty}`, arsSpent, 'ARS', fd.medio, notaUSD, d.getMonth() + 1, d.getFullYear(), fd.subcategoria || (fd.categoria === 'Ahorro / Inversiones' ? 'Dólares / moneda extranjera' : '')];
+      if (fd.categoria === 'Ahorro / Inversiones' && !fd.metaAhorro) {
+        // Auto-meta "Dolares ahorrados" para acumular USD sin meta especifica
+        extraAhorroUSD = usdQty;
+      }
+    } else {
+      row = [nextId(rows.transacciones), dateToExcelSerial(fd.fecha), kind, fd.categoria, desc, Number(fd.importe), fd.moneda, fd.medio, fd.notas || '', d.getMonth() + 1, d.getFullYear(), fd.subcategoria || ''];
+    }
     setStatus('Guardando…', 'wait');
     try {
       await addRow(TABLES.transacciones, row);
@@ -2611,10 +2585,22 @@ function openSimpleModal(kind, medioInicial) {
       if (kind === 'Gasto' && fd.categoria === 'Ahorro / Inversiones' && fd.metaAhorro) {
         await addAporteToMeta(Number(fd.metaAhorro), Number(fd.importe), fd.fecha);
       }
+      if (extraAhorroUSD) {
+        // Crear o actualizar meta "Dolares ahorrados" para que figure en USD el ahorro
+        const existing = (rows.ahorro || []).find(r => fixedKey(r.Meta) === fixedKey('Dolares ahorrados') && String(r.Moneda || '').toUpperCase() === 'USD');
+        if (existing) await addAporteToMeta(existing.__rowIndex, extraAhorroUSD, fd.fecha);
+        else await addRow(TABLES.ahorro, [nextId(rows.ahorro), 'Dolares ahorrados', 'USD', 0, '', dateToExcelSerial(fd.fecha), extraAhorroUSD, 'En curso', 'Auto-creada desde compra USD', extraAhorroUSD, 'SI']);
+      }
       closeModal(); await loadAll();
     } catch (err) { showError('No se pudo guardar: ' + err.message); setStatus('Error', 'err'); }
   });
 }
+window.refreshCotizCalc = function() {
+  const cot = Number(document.querySelector('#txFormNew [name="cotizacion"]')?.value || 0);
+  const imp = Number(document.querySelector('#txFormNew [name="importe"]')?.value || 0);
+  const el = document.getElementById('cotizCalc');
+  if (el) el.textContent = cot > 0 && imp > 0 ? fmtARS(cot * imp) : '$ —';
+};
 
 // ── MODAL: Compra con tarjeta ──
 function openTcModal() {
