@@ -777,9 +777,11 @@ async function readTable(name) {
     headers = fallbackHeaders;
     XLSX.utils.sheet_add_aoa(ws, [headers], {origin:'A1'});
   }
-  // limitar al ancho real de headers esperados si la hoja venía con columnas visuales extra
-  const usefulCols = Math.max(headers.filter(Boolean).length, fallbackHeaders.length, 1);
-  headers = headers.slice(0, usefulCols);
+  // Usar SIEMPRE el esquema esperado cuando existe.
+  // Esto evita que columnas auxiliares/visuales del Excel se interpreten como datos
+  // (por ejemplo, en DATA_Inversiones aparecía una columna auxiliar y corría los campos).
+  const usefulCols = fallbackHeaders.length || Math.max(headers.filter(Boolean).length, 1);
+  headers = fallbackHeaders.length ? fallbackHeaders.slice(0, usefulCols) : headers.slice(0, usefulCols);
   const data = aoa.slice(1)
     .map((row, i) => ({row: (row || []).slice(0, usefulCols), originalIdx: i + 1}))
     .filter(({row}) => !aoaIsEmptyRow(row))
@@ -1359,7 +1361,7 @@ async function loadAll() {
 
   const now = new Date();
   $('#headerSub').textContent = `Federico Ciancio · Actualizado ${now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}`;
-  if (workbookOk && rows.transacciones.length > 0) setStatus('✓ Sincronizado', 'ok');
+  if (workbookOk) setStatus('✓ Sincronizado', 'ok');
   else if (facturas.length > 0) setStatus('Parcial: solo honorarios', 'err');
   else setStatus('Error al cargar', 'err');
 }
